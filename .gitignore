@@ -7,3 +7,4 @@ build/
 *.p8
 xcuserdata/
 .swiftpm/
+App/Info.plist

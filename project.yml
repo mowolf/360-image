@@ -1,0 +1,67 @@
+# Xcode project definition. Generate the .xcodeproj with:  xcodegen generate
+# BUNDLE_ID / DEVELOPMENT_TEAM / BUILD_NUMBER come from the environment (CI sets them).
+name: Pano360
+options:
+  bundleIdPrefix: com.pano360
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+packages:
+  PanoramaCore:
+    path: Packages/PanoramaCore
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "${BUILD_NUMBER}"
+    DEVELOPMENT_TEAM: "${DEVELOPMENT_TEAM}"
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+  configs:
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+targets:
+  Pano360:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    dependencies:
+      - package: PanoramaCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "${BUNDLE_ID}"
+        PRODUCT_NAME: Pano360
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: "Pano 360"
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
+        INFOPLIST_KEY_NSCameraUsageDescription: "The camera is used to capture the photos that are stitched into your 360° panorama."
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Save your finished 360° panoramas to your photo library."
+        INFOPLIST_KEY_NSMotionUsageDescription: "Motion data lets you look around your panorama by moving your phone."
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIStatusBarHidden: YES
+        INFOPLIST_KEY_UIRequiresFullScreen: YES
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+    info:
+      path: App/Info.plist
+      properties:
+        UIRequiredDeviceCapabilities: [arkit, metal]
+        ITSAppUsesNonExemptEncryption: false
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+
+schemes:
+  Pano360:
+    build:
+      targets:
+        Pano360: all
+    archive:
+      config: Release
