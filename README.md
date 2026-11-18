@@ -40,7 +40,7 @@ change that matters on a phone: **the sensors already give each photo's orientat
    gives every photo a camera-to-world rotation, usually accurate to under 1°, plus exact
    per-frame intrinsics. Photos come from `captureHighResolutionFrame` and are downscaled
    to 2048 px. Exposure, white balance and focus are locked after the first shot so all
-   photos match.
+   photos match. Focus stays automatic so near objects stay sharp.
 2. **Pairwise registration in a common view.** For every pair the sensor poses say overlap,
    both photos are re-projected into one rectilinear view centred between them. The overlap
    is then already nearly aligned and free of perspective differences, so plain patch
@@ -57,13 +57,26 @@ change that matters on a phone: **the sensors already give each photo's orientat
    (sky, ceilings) where ARKit put them. The horizon stays level because gravity is known.
 4. **Gain compensation.** Brown & Lowe's per-image gain, solved per colour channel from
    overlap statistics on a small equirectangular grid.
-5. **Seams and multi-band blending.** Each output pixel goes to the photo with the highest
-   centre-weight (a maximum-weight seam). Five Laplacian pyramid bands are blended with
-   the blurred seam masks: low frequencies blend over a wide area (no exposure steps) and
-   high frequencies over a few pixels (no ghosting). Warped tiles are hole-filled with
+5. **Parallax compensation (LiDAR + ARKit position).** Handheld capture never rotates
+   exactly around the lens: turning your body moves the phone 10–40 cm, which shifts
+   nearby objects by many degrees between shots and causes ghosting and broken edges.
+   ARKit gives every shot's position, and on LiDAR iPhones (Pro models) the
+   `smoothedSceneDepth` map. Each pixel is lifted to 3D and re-projected from the
+   panorama centre, the mean capture position (`Projector`, a fixed-point solve on the
+   depth map). Alignment, bundle adjustment, gain estimation, seams and blending all use
+   this projection. The capture UI also warns when the phone drifts more than 8 cm from
+   its spot and blocks capture beyond 25 cm.
+6. **Graph-cut seams** (Kwatra et al. 2003, Agarwala et al. 2004). Each panorama pixel
+   is labelled with its source photo by minimizing data + seam costs with α-expansion
+   (Boykov–Kolmogorov max-flow) on a 1536×768 grid. A seam between photos *a* and *b*
+   costs |I_a − I_b| on both sides, so seams run where the photos agree and go around
+   people, chairs and other parallax-affected objects instead of through them.
+7. **Multi-band blending.** Five Laplacian pyramid bands are blended with the blurred
+   seam masks: low frequencies blend over a wide area (no exposure steps) and high
+   frequencies over a few pixels (no ghosting). Warped tiles are hole-filled with
    push-pull first, so the pyramid never sees artificial edges. Pyramids wrap around
    horizontally, so the ±180° seam is invisible.
-6. **Output.** An equirectangular panorama, 8192×4096 on 8 GB devices, 6144×3072 on 6 GB
+8. **Output.** An equirectangular panorama, 8192×4096 on 8 GB devices, 6144×3072 on 6 GB
    and 4096×2048 otherwise, with GPano metadata.
 
 Why not off-the-shelf OpenCV? Its stitcher is good, but it brings a large C++ binary, does
@@ -81,8 +94,17 @@ reprojection RMS 0.9 px, 34.6 dB PSNR against ground truth.
 cd Packages/PanoramaCore && swift test -c release -Xswiftc -enable-testing
 ```
 
-Possible future improvements: graph-cut seams (Agarwala et al. 2004) to cut around
-moving people, and a lens-distortion term in bundle adjustment.
+A second test renders a room with nearby objects, captured by a phone that sits 12 cm in
+front of the user's turning axis, with LiDAR-like 64×48 depth maps:
+
+| Pipeline | PSNR vs. ground truth | Rotation error |
+| --- | --- | --- |
+| Rotation-only (previous) | 16.7 dB | 4.6° (parallax absorbed as rotation error) |
+| + graph-cut seams | 16.7 dB | 4.6° |
+| + depth parallax compensation | **32.2 dB** | **0.02°** |
+
+Possible future improvements: optical-flow deghosting for iPhones without LiDAR, and a
+lens-distortion term in bundle adjustment.
 
 ## Building locally
 

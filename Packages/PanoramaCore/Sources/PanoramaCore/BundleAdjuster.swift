@@ -22,15 +22,25 @@ public struct BundleAdjuster: Sendable {
         public var finalRMS: Double
     }
 
-    public func optimize(initial: [Mat3], matches: [RayMatch]) -> Result {
+    /// - Parameter offsets: camera positions relative to the panorama centre (world). With
+    ///   depth-carrying matches, residuals compare directions from the panorama centre, so
+    ///   parallax from the phone moving between shots is not mistaken for rotation error.
+    public func optimize(initial: [Mat3], matches: [RayMatch], offsets: [Vec3]? = nil) -> Result {
         let n = initial.count
+        let offs = offsets ?? [Vec3](repeating: .zero, count: n)
+
+        /// World direction (from the panorama centre) of a match endpoint.
+        func dir(_ R: Mat3, _ ray: Vec3, _ point: Vec3?, _ off: Vec3) -> Vec3 {
+            guard let point, off.length > 1e-6 else { return R * ray }
+            return (R * point + off).normalized
+        }
         var R = initial
         let dim = 3 * n
 
         func cost(_ R: [Mat3]) -> (Double, Double) {
             var c = 0.0, sq = 0.0
             for m in matches {
-                let e = (R[m.i] * m.rayI - R[m.j] * m.rayJ).length * focal
+                let e = (dir(R[m.i], m.rayI, m.pointI, offs[m.i]) - dir(R[m.j], m.rayJ, m.pointJ, offs[m.j])).length * focal
                 sq += e * e
                 c += huber(e)
             }
@@ -52,7 +62,7 @@ public struct BundleAdjuster: Sendable {
             var g = [Double](repeating: 0, count: dim)
 
             for m in matches {
-                let a = R[m.i] * m.rayI, b = R[m.j] * m.rayJ
+                let a = dir(R[m.i], m.rayI, m.pointI, offs[m.i]), b = dir(R[m.j], m.rayJ, m.pointJ, offs[m.j])
                 let e = (a - b) * focal
                 let en = e.length
                 let w = en <= huberPixels ? 1.0 : huberPixels / en

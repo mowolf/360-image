@@ -12,6 +12,10 @@ struct CapturedShot: Identifiable, Sendable {
     let url: URL
     let intrinsics: Intrinsics
     let rotation: Mat3
+    /// Camera position (ARKit world, metres).
+    let position: Vec3
+    /// LiDAR depth saved next to the photo (Pro models), used for parallax compensation.
+    let depthURL: URL?
 }
 
 /// Drives the guided capture: tracks the phone's orientation with ARKit, decides which
@@ -36,6 +40,8 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     var hint = "Hold your phone upright"
     var isCapturingPhoto = false
     var trackingMessage: String?
+    /// True when the phone has moved away from where the first photos were taken.
+    var driftWarning = false
 
     // MARK: Internals
     @ObservationIgnored let arView: ARView
@@ -50,6 +56,8 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     @ObservationIgnored private var exposureLocked = false
     @ObservationIgnored private let haptics = UIImpactFeedbackGenerator(style: .medium)
     @ObservationIgnored let sessionDirectory: URL
+    /// Mean position of the photos taken so far (the panorama's centre).
+    @ObservationIgnored private var anchorPosition: Vec3?
 
     // Tuning
     private let alignTolerance = 3.5.radians
@@ -57,6 +65,8 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     private let maxAngularSpeed = 12.0.radians   // per second
     private let holdDuration = 0.45               // seconds
     private let photoMaxLongSide = 2048
+    private let driftWarnDistance = 0.08
+    private let driftBlockDistance = 0.25
 
     override init() {
         arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
@@ -80,6 +90,10 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         if let format = ARWorldTrackingConfiguration.recommendedVideoFormatForHighResolutionFrameCapturing {
             config.videoFormat = format
         }
+        // LiDAR depth lets the stitcher undo parallax of nearby objects.
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+            config.frameSemantics.insert(.smoothedSceneDepth)
+        }
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         UIApplication.shared.isIdleTimerDisabled = true
         haptics.prepare()
@@ -94,8 +108,14 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         try? FileManager.default.removeItem(at: sessionDirectory)
     }
 
+    private func updateAnchor() {
+        anchorPosition = shots.isEmpty ? nil : shots.map(\.position).reduce(Vec3.zero, +) / Double(shots.count)
+    }
+
     func undoLast() {
         guard let last = shots.popLast() else { return }
+        updateAnchor()
+        if let d = last.depthURL { try? FileManager.default.removeItem(at: d) }
         capturedTargets.remove(last.targetID)
         if let anchor = previewAnchors.removeValue(forKey: last.id) {
             arView.scene.removeAnchor(anchor)
@@ -110,6 +130,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         for a in previewAnchors.values { arView.scene.removeAnchor(a) }
         previewAnchors.removeAll()
         shots.removeAll()
+        anchorPosition = nil
         capturedTargets.removeAll()
         plan = nil
         phase = .starting
@@ -209,10 +230,19 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         let roll = atan2(up.dot(heldRight), up.dot(heldUp))
         let rollOK = target.isPole || abs(roll) < rollTolerance
         let steady = speed < maxAngularSpeed
-        isAligned = angleError < alignTolerance && rollOK
+        // Parallax guard: the phone should turn around itself, not around the user.
+        let position = Vec3(Double(camPos.x), Double(camPos.y), Double(camPos.z))
+        let drift = anchorPosition.map { (position - $0).length } ?? 0
+        driftWarning = drift > driftWarnDistance
+        let positionOK = drift < driftBlockDistance
+        isAligned = angleError < alignTolerance && rollOK && positionOK
 
         if isCapturingPhoto {
             hint = "Hold still…"
+        } else if !positionOK {
+            hint = "Move the phone back – turn around the phone, not yourself"
+        } else if driftWarning && angleError > alignTolerance {
+            hint = "Keep the phone in one spot and turn around it"
         } else if trackingMessage != nil {
             hint = trackingMessage!
         } else if angleError < alignTolerance * 2.5 && !rollOK {
@@ -246,14 +276,17 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         let fallbackK = fallbackFrame.camera.intrinsics
         let fallbackRes = fallbackFrame.camera.imageResolution
         let fallbackBuffer = fallbackFrame.capturedImage
+        let fallbackDepth = fallbackFrame.smoothedSceneDepth ?? fallbackFrame.sceneDepth
         arView.session.captureHighResolutionFrame { [weak self] hiRes, _ in
             guard let self else { return }
             let pose = hiRes?.camera.transform ?? fallbackPose
             let k = hiRes?.camera.intrinsics ?? fallbackK
             let res = hiRes?.camera.imageResolution ?? fallbackRes
             let buffer = hiRes?.capturedImage ?? fallbackBuffer
+            let depth = hiRes?.smoothedSceneDepth ?? hiRes?.sceneDepth ?? fallbackDepth
             DispatchQueue.global(qos: .userInitiated).async {
-                let result = self.process(buffer: buffer, intrinsics: k, resolution: res, pose: pose, target: target)
+                let result = self.process(buffer: buffer, intrinsics: k, resolution: res, pose: pose,
+                                          depth: depth, target: target)
                 DispatchQueue.main.async { self.finishCapture(result) }
             }
         }
@@ -266,7 +299,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     }
 
     private func process(buffer: CVPixelBuffer, intrinsics k: simd_float3x3, resolution: CGSize,
-                         pose: simd_float4x4, target: CaptureTarget) -> ProcessedShot? {
+                         pose: simd_float4x4, depth: ARDepthData?, target: CaptureTarget) -> ProcessedShot? {
         guard let image = ImageSupport.cgImage(from: buffer, maxLongSide: photoMaxLongSide) else { return nil }
         let bufW = CVPixelBufferGetWidth(buffer), bufH = CVPixelBufferGetHeight(buffer)
         // ARKit intrinsics refer to camera.imageResolution; rescale to the pixel buffer, then to the saved image.
@@ -277,8 +310,14 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         let url = sessionDirectory.appendingPathComponent("\(id.uuidString).jpg")
         guard ImageSupport.writeJPEG(image, to: url, quality: 0.93) else { return nil }
         let preview = ImageSupport.downscaled(image, maxLongSide: 512) ?? image
-        let shot = CapturedShot(id: id, targetID: target.id, url: url, intrinsics: K, rotation: Mat3(pose))
         let pos = SIMD3<Float>(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
+        var depthURL: URL?
+        if let depth {
+            let dURL = sessionDirectory.appendingPathComponent("\(id.uuidString).depth")
+            if DepthIO.write(depth, to: dURL) { depthURL = dURL }
+        }
+        let shot = CapturedShot(id: id, targetID: target.id, url: url, intrinsics: K, rotation: Mat3(pose),
+                                position: Vec3(pos), depthURL: depthURL)
         return ProcessedShot(shot: shot, preview: preview, position: pos)
     }
 
@@ -288,6 +327,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         guard let result, phase == .capturing else { return }
         shots.append(result.shot)
         capturedTargets.insert(result.shot.targetID)
+        updateAnchor()
         haptics.impactOccurred()
         lockExposureIfNeeded()
         let radius = Float(1.6) - Float(shots.count) * 0.006
@@ -304,14 +344,14 @@ final class CaptureSession: NSObject, ARSessionDelegate {
 
     // MARK: Exposure
 
-    /// Locks exposure, white balance and focus after the first photo so all photos match.
+    /// Locks exposure and white balance after the first photo so all photos match. Focus
+    /// stays automatic: near walls and tables must stay sharp.
     private func lockExposureIfNeeded() {
         guard !exposureLocked, let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
         do {
             try device.lockForConfiguration()
             if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
             if device.isWhiteBalanceModeSupported(.locked) { device.whiteBalanceMode = .locked }
-            if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
             device.unlockForConfiguration()
             exposureLocked = true
         } catch {}
@@ -323,7 +363,6 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             try device.lockForConfiguration()
             if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
             if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { device.whiteBalanceMode = .continuousAutoWhiteBalance }
-            if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
             device.unlockForConfiguration()
             exposureLocked = false
         } catch {}

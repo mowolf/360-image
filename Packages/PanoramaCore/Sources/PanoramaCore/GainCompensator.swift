@@ -24,13 +24,13 @@ public struct GainCompensator: Sendable {
         for k in 0..<n {
             let img = thumbs[k]
             let K = cameras[k].intrinsics
-            let Rt = cameras[k].rotation.transposed
+            let P = cameras[k].projector
             img.data.withUnsafeBufferPointer { src in
                 var px = [Float](repeating: 0, count: 3)
                 for y in 0..<H {
                     for x in 0..<W {
                         let d = Equirect.direction(x: Double(x), y: Double(y), width: W, height: H)
-                        guard let p = K.project(Rt * d), p.u >= 0, p.v >= 0,
+                        guard let p = P.project(d), p.u >= 0, p.v >= 0,
                               p.u <= Double(K.width - 1), p.v <= Double(K.height - 1) else { continue }
                         px.withUnsafeMutableBufferPointer { o in
                             FloatImage.sampleBilinear(src, width: img.width, height: img.height, channels: 3,

@@ -54,27 +54,33 @@ public final class MultiBandBlender {
 
     /// Bounding box of a camera's footprint on the canvas, padded and aligned to 2^levels.
     public func footprint(of cam: PanoCamera) -> Footprint {
-        let K = cam.intrinsics
-        let W = Double(width), H = Double(height)
         let align = 1 << levels
-        let pad = 2 * align + 4
-        let Rt = cam.rotation.transposed
+        return Self.footprint(of: cam, width: width, height: height, align: align, pad: 2 * align + 4)
+    }
+
+    /// Bounding box of a camera's footprint on an equirectangular grid of the given size.
+    public static func footprint(of cam: PanoCamera, width: Int, height: Int, align: Int, pad basePad: Int) -> Footprint {
+        let K = cam.intrinsics
+        let P = cam.projector
+        let W = Double(width), H = Double(height)
+        // Depth-based reprojection can move interior pixels outside the hull of the
+        // border; leave some extra room.
+        let pad = basePad + (P.parallax ? width / 72 : 0)
         func inside(_ d: Vec3) -> Bool {
-            guard let p = K.project(Rt * d) else { return false }
-            return p.u >= 0 && p.v >= 0 && p.u <= Double(K.width - 1) && p.v <= Double(K.height - 1)
+            guard let p = P.project(d) else { return false }
+            return P.inside(p)
         }
         let north = inside(Vec3(0, 1, 0)), south = inside(Vec3(0, -1, 0))
-        let center = Equirect.lonLat(cam.axis)
+        let center = Equirect.lonLat(P.unproject(u: K.cx, v: K.cy))
         var latMin = Double.infinity, latMax = -Double.infinity
         var dMin = Double.infinity, dMax = -Double.infinity
         let steps = 48
+        let mw: Double = Double(K.width - 1), mh: Double = Double(K.height - 1)
         for s in 0...steps {
             let t = Double(s) / Double(steps)
-            let mw: Double = Double(K.width - 1), mh: Double = Double(K.height - 1)
             let pts: [(Double, Double)] = [(t * mw, 0), (t * mw, mh), (0, t * mh), (mw, t * mh)]
             for (u, v) in pts {
-                let d = cam.rotation * K.ray(u: u, v: v)
-                let ll = Equirect.lonLat(d)
+                let ll = Equirect.lonLat(P.unproject(u: u, v: v))
                 latMin = min(latMin, ll.lat); latMax = max(latMax, ll.lat)
                 var dl = ll.lon - center.lon
                 while dl > .pi { dl -= 2 * .pi }
@@ -86,10 +92,10 @@ public final class MultiBandBlender {
         if south { latMin = -.pi / 2 }
         var y0 = Int(floor((.pi / 2 - latMax) / .pi * H)) - pad
         var y1 = Int(ceil((.pi / 2 - latMin) / .pi * H)) + pad
-        y0 = max(0, (y0 / align) * align)
+        y0 = max(0, Int(floor(Double(y0) / Double(align))) * align)
         y1 = min(height, ((y1 + align - 1) / align) * align)
 
-        var x0: Int, x1: Int
+        var x0 = 0, x1 = width
         var full = north || south
         if !full {
             x0 = Int(floor((center.lon + dMin + .pi) / (2 * .pi) * W)) - pad
@@ -97,11 +103,19 @@ public final class MultiBandBlender {
             x0 = Int(floor(Double(x0) / Double(align))) * align
             x1 = Int(ceil(Double(x1) / Double(align))) * align
             if x1 - x0 >= width { full = true }
-        } else {
-            x0 = 0; x1 = width
         }
         if full { x0 = 0; x1 = width }
         return Footprint(x0: x0, x1: x1, y0: y0, y1: y1, wrapsFully: full)
+    }
+
+    /// Optional content-aware seams (from `SeamFinder`) on a coarser grid. Where the
+    /// chosen photo covers a pixel it overrides the maximum-weight choice.
+    private var seamLabels: [UInt8]?
+    private var seamWidth = 0
+
+    public func setSeamLabels(_ labels: [UInt8], width w: Int) {
+        seamLabels = labels
+        seamWidth = w
     }
 
     @inline(__always) private func wrapX(_ x: Int) -> Int {
@@ -115,7 +129,10 @@ public final class MultiBandBlender {
         precondition(k < 255)
         let fp = footprint(of: cam)
         let K = cam.intrinsics
-        let Rt = cam.rotation.transposed
+        let P = cam.projector
+        let seam = seamLabels
+        let sW = seamWidth, sH = seamWidth / 2
+        let sx = Double(sW) / Double(width), sy = Double(sH) / Double(height)
         let invW: Double = 2.0 / Double(K.width), invH: Double = 2.0 / Double(K.height)
         let maxU: Double = Double(K.width - 1), maxV: Double = Double(K.height - 1)
         let cs = colSin, cc = colCos, rs = rowSin, rc = rowCos
@@ -130,11 +147,15 @@ public final class MultiBandBlender {
                 var gx = x % W
                 if gx < 0 { gx += W }
                 let d = Vec3(rcy * cs[gx], rsy, -rcy * cc[gx])
-                guard let p = K.project(Rt * d) else { continue }
+                guard let p = P.project(d) else { continue }
                 if p.u < 0 || p.v < 0 || p.u > maxU || p.v > maxV { continue }
                 let wu: Double = 1 - abs(p.u * invW - 1)
                 let wv: Double = 1 - abs(p.v * invH - 1)
-                let w = Float(wu * wv) + 1e-6
+                var w = Float(wu * wv) + 1e-6
+                if let seam {
+                    let si = min(sH - 1, Int(Double(y) * sy)) * sW + min(sW - 1, Int(Double(gx) * sx))
+                    if seam[si] == label { w += 2 }
+                }
                 let i = y * W + gx
                 if w > bestPtr[i] { bestPtr[i] = w; labPtr[i] = label }
             }
@@ -159,7 +180,7 @@ public final class MultiBandBlender {
         let fp = footprint(of: cam)
         let tw = fp.width, th = fp.height
         let K = cam.intrinsics
-        let Rt = cam.rotation.transposed
+        let P = cam.projector
         var tile = FloatImage(width: tw, height: th, channels: 3)
         var valid = [Bool](repeating: false, count: tw * th)
         var mask = FloatImage(width: tw, height: th, channels: 1)
@@ -179,7 +200,7 @@ public final class MultiBandBlender {
                                     let ti = ty * tw + tx
                                     if lab[y * self.width + gx] == UInt8(k) { m[ti] = 1 }
                                     let d = Vec3(rc[y] * cs[gx], rs[y], -rc[y] * cc[gx])
-                                    guard let p = K.project(Rt * d), p.u >= 0, p.v >= 0, p.u <= maxU, p.v <= maxV else { continue }
+                                    guard let p = P.project(d), p.u >= 0, p.v >= 0, p.u <= maxU, p.v <= maxV else { continue }
                                     let o = t.baseAddress! + ti * 3
                                     FloatImage.sampleBilinear(s, width: src.width, height: src.height, channels: 3,
                                                               x: p.u, y: p.v, out: o)

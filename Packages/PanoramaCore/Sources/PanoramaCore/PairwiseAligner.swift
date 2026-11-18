@@ -7,6 +7,10 @@ public struct RayMatch: Sendable {
     public var j: Int
     public var rayI: Vec3
     public var rayJ: Vec3
+    /// 3D points in each camera's frame (metres) when depth is known; used to correct
+    /// for parallax in bundle adjustment.
+    public var pointI: Vec3?
+    public var pointJ: Vec3?
 }
 
 public struct PairAlignment: Sendable {
@@ -121,7 +125,9 @@ public struct PairwiseAligner: Sendable {
     }
 
     /// Renders `img` (camera with intrinsics K) into the local view; `M` maps local rays to camera rays.
-    func render(_ img: FloatImage, K: Intrinsics, M: Mat3, view: LocalView) -> (FloatImage, [Bool]) {
+    /// Renders `img` into the local view; `W` maps local rays to world directions.
+    func render(_ img: FloatImage, projector P: Projector, W: Mat3, view: LocalView) -> (FloatImage, [Bool]) {
+        let K = P.K
         let s = view.size
         var out = FloatImage(width: s, height: s, channels: 1)
         var mask = [Bool](repeating: false, count: s * s)
@@ -133,8 +139,7 @@ public struct PairwiseAligner: Sendable {
                         var v: Float = 0
                         for x in 0..<s {
                             let r = Vec3((Double(x) - view.center) / view.focal, -(Double(y) - view.center) / view.focal, -1)
-                            let c = M * r
-                            guard let p = K.project(c), p.u >= 0.5, p.v >= 0.5, p.u <= maxU, p.v <= maxV else { continue }
+                            guard let p = P.project((W * r).normalized), p.u >= 0.5, p.v >= 0.5, p.u <= maxU, p.v <= maxV else { continue }
                             FloatImage.sampleBilinear(src, width: img.width, height: img.height, channels: 1,
                                                       x: p.u, y: p.v, out: &v)
                             dst[y * s + x] = v
@@ -153,15 +158,13 @@ public struct PairwiseAligner: Sendable {
         let size = max(256, min(1024, Int(srcPxPerRad * config.viewFOV)))
         let view = LocalView(size: size, focal: Double(size) / 2 / tan(config.viewFOV / 2))
         let Rmid = Mat3.slerp(camI.rotation, camJ.rotation, 0.5)
-        let Mi = camI.rotation.transposed * Rmid
-        let Mj = camJ.rotation.transposed * Rmid
-
-        let (A, maskA) = render(grayI, K: camI.intrinsics, M: Mi, view: view)
+        let Pi = camI.projector, Pj = camJ.projector
+        let (A, maskA) = render(grayI, projector: Pi, W: Rmid, view: view)
 
         // Stage 1: coarse global shift.
         var dR = Mat3.identity
         do {
-            let (B, maskB) = render(grayJ, K: camJ.intrinsics, M: Mj, view: view)
+            let (B, maskB) = render(grayJ, projector: Pj, W: Rmid, view: view)
             let maxShift = config.maxSensorErrorDegrees.radians * view.focal
             guard let t = coarseShift(A, maskA, B, maskB, maxShift: maxShift) else { debug("coarse fail"); return nil }
             debug("coarse \(t)")
@@ -175,7 +178,7 @@ public struct PairwiseAligner: Sendable {
         var inlierRays: [(Vec3, Vec3)] = []
         let passes: [(search: Int, threshold: Double)] = [(7, 3.0), (3, 1.25)]
         for pass in passes {
-            let (B, maskB) = render(grayJ, K: camJ.intrinsics, M: Mj * dR, view: view)
+            let (B, maskB) = render(grayJ, projector: Pj, W: Rmid * dR, view: view)
             let matches = matchFeatures(A, maskA, B, maskB, size: size, searchRadius: pass.search)
             debug("matches \(matches.count)")
             if matches.count < config.minInliers { return nil }
@@ -191,8 +194,14 @@ public struct PairwiseAligner: Sendable {
         let correction = dR.rotationVector.length
         if correction > config.maxSensorErrorDegrees.radians { return nil }
 
-        let rm = inlierRays.map { (a, b) in
-            RayMatch(i: i, j: j, rayI: (Mi * a).normalized, rayJ: (Mj * b).normalized)
+        var rm: [RayMatch] = []
+        for (a, b) in inlierRays {
+            guard let pi = Pi.project((Rmid * a).normalized), let pj = Pj.project((Rmid * b).normalized) else { continue }
+            rm.append(RayMatch(i: i, j: j,
+                               rayI: camI.intrinsics.ray(u: pi.u, v: pi.v).normalized,
+                               rayJ: camJ.intrinsics.ray(u: pj.u, v: pj.v).normalized,
+                               pointI: Pi.cameraPoint(u: pi.u, v: pi.v),
+                               pointJ: Pj.cameraPoint(u: pj.u, v: pj.v)))
         }
         return PairAlignment(i: i, j: j, matches: rm, correction: correction)
     }

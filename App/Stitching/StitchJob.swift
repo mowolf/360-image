@@ -40,7 +40,8 @@ final class StitchJob: Identifiable {
         guard task == nil else { return }
         let shots = self.shots
         let sources = shots.map { shot in
-            StitchSource(intrinsics: shot.intrinsics, rotation: shot.rotation) {
+            StitchSource(intrinsics: shot.intrinsics, rotation: shot.rotation, position: shot.position,
+                         depth: shot.depthURL.flatMap(DepthIO.read)) {
                 guard let cg = ImageSupport.loadCGImage(shot.url) else { throw CocoaError(.fileReadCorruptFile) }
                 return ImageSupport.floatImage(from: cg)
             }
