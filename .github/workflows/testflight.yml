@@ -61,6 +61,9 @@ jobs:
           xcodebuild -version
           xcodegen generate
 
+      # The archive is built unsigned; the export step signs it with Apple's
+      # cloud-managed distribution certificate. Signing the archive itself would
+      # create a new local development certificate on every (ephemeral) runner.
       - name: Archive
         run: |
           set -o pipefail
@@ -68,12 +71,9 @@ jobs:
             -project Pano360.xcodeproj -scheme Pano360 -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Pano360.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$ASC_KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
             | tee "$RUNNER_TEMP/archive.log" | grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)"
 
       - name: Upload to App Store Connect
