@@ -45,7 +45,8 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: "The camera is used to capture the photos that are stitched into your 360° panorama."
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Save your finished 360° panoramas to your photo library."
         INFOPLIST_KEY_NSMotionUsageDescription: "Motion data lets you look around your panorama by moving your phone."
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIStatusBarHidden: YES
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
@@ -53,6 +54,12 @@ targets:
       path: App/Info.plist
       properties:
         UIRequiredDeviceCapabilities: [arkit, metal]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
