@@ -31,7 +31,11 @@ public struct CapturePlan: Sendable {
     ///   - overlap: fraction of each photo that should overlap its neighbour (0.3 to 0.4 is good).
     public init(horizontalFOV hfov: Double, verticalFOV vfov: Double, overlap: Double = 0.35) {
         let step = vfov * (1 - overlap)
-        let ringsPerHemisphere = max(0, Int(ceil((.pi / 2) / step)) - 1)
+        // The zenith/nadir photo covers a cap of radius ~min(fov)/2 around the pole, so the
+        // rings only need to reach up to where that cap (minus some overlap) begins.
+        let poleCap = min(hfov, vfov) / 2 * (1 - overlap / 2)
+        let span = Double.pi / 2 - poleCap
+        let ringsPerHemisphere = max(0, Int(ceil(span / step)) - 1)
         let ringSpacing = (.pi / 2) / Double(ringsPerHemisphere + 1)
 
         var pitches: [Double] = [0]

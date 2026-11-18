@@ -39,7 +39,7 @@ public struct PairwiseAligner: Sendable {
         public var viewFOV: Double = 70.radians
         public var maxSensorErrorDegrees: Double = 8
         public var patchRadius: Int = 5
-        public var gridCells: Int = 10
+        public var gridCells: Int = 16
         public var minNCC: Float = 0.82
         public var minInliers: Int = 8
         public var minOverlapFraction: Double = 0.06

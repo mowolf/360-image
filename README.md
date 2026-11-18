@@ -46,7 +46,7 @@ change that matters on a phone: **the sensors already give each photo's orientat
    is then already nearly aligned and free of perspective differences, so plain patch
    matching works well, without scale- or rotation-invariant descriptors.
    - A coarse-to-fine NCC search over a pyramid removes the remaining global offset.
-   - Shi-Tomasi corners are taken from a 10×10 grid so matches spread across the overlap.
+   - Shi-Tomasi corners are taken from a 16×16 grid so matches spread across the overlap.
      They are matched by normalised cross-correlation, which ignores exposure differences,
      with sub-pixel parabola refinement.
    - A 3D rotation is fitted robustly (exhaustive 2-point RANSAC, then Gauss-Newton). The
@@ -73,9 +73,9 @@ pipeline more robust and much faster. Keeping it pure Swift makes it testable an
 
 **Verification.** `PanoramaCoreTests` renders a synthetic full-sphere scene with the real
 capture plan, randomised aiming errors, about 1° of simulated sensor noise and ±8%
-exposure differences, then stitches it. Current results: mean rotation error 0.07°
-(down from about 3° before alignment), 2.4k correspondences over 151 pairs, reprojection
-RMS 0.9 px, 35 dB PSNR against ground truth.
+exposure differences, then stitches it. Current results: 31 photos, mean rotation error
+0.05° (down from about 3° before alignment), 2.2k correspondences over 95 pairs,
+reprojection RMS 0.9 px, 34.6 dB PSNR against ground truth.
 
 ```sh
 cd Packages/PanoramaCore && swift test -c release -Xswiftc -enable-testing
