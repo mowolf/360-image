@@ -180,7 +180,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         func screenPoint(_ dir: Vec3) -> CGPoint? {
             let c = Rt * dir
             if c.z > -0.05 { return nil }
-            guard let p = arView.project(camPos + dir.simd * 2) else { return nil }
+            guard let p = arView.project(camPos + dir.float3 * 2) else { return nil }
             let b = arView.bounds
             return b.insetBy(dx: -30, dy: -30).contains(p) ? p : nil
         }

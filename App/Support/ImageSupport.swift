@@ -18,7 +18,7 @@ extension Mat3 {
 }
 
 extension Vec3 {
-    var simd: SIMD3<Float> { SIMD3<Float>(Float(x), Float(y), Float(z)) }
+    var float3: SIMD3<Float> { SIMD3<Float>(Float(x), Float(y), Float(z)) }
     init(_ v: SIMD3<Float>) { self.init(Double(v.x), Double(v.y), Double(v.z)) }
 }
 

@@ -20,7 +20,7 @@ enum ShotPreviewMesh {
             for c in 0...cols {
                 let u = Double(c) / Double(cols), v = Double(r) / Double(rows)
                 let ray = K.ray(u: u * Double(K.width - 1), v: v * Double(K.height - 1)).normalized
-                let world = (R * ray).simd * radius + cameraPosition
+                let world = (R * ray).float3 * radius + cameraPosition
                 positions.append(world)
                 uvs.append(SIMD2<Float>(Float(u), Float(1 - v)))
             }
