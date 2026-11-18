@@ -1,8 +1,8 @@
 # Xcode project definition. Generate the .xcodeproj with:  xcodegen generate
-# BUNDLE_ID / DEVELOPMENT_TEAM / BUILD_NUMBER come from the environment (CI sets them).
+# DEVELOPMENT_TEAM / BUILD_NUMBER come from the environment (CI sets them).
 name: Pano360
 options:
-  bundleIdPrefix: com.pano360
+  bundleIdPrefix: com.moritzwolf
   deploymentTarget:
     iOS: "27.0"
   createIntermediateGroups: true
@@ -35,7 +35,7 @@ targets:
       - package: PanoramaCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: "${BUNDLE_ID}"
+        PRODUCT_BUNDLE_IDENTIFIER: com.moritzwolf.pano360
         PRODUCT_NAME: Pano360
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor

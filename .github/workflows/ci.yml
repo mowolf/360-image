@@ -25,7 +25,6 @@ jobs:
     name: Build iOS app (unsigned)
     runs-on: xcode-27
     env:
-      BUNDLE_ID: ${{ vars.BUNDLE_ID || secrets.BUNDLE_ID || 'com.example.pano360' }}
       DEVELOPMENT_TEAM: ""
       BUILD_NUMBER: ${{ github.run_number }}
     steps:

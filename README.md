@@ -88,7 +88,7 @@ moving people, and a lens-distortion term in bundle adjustment.
 
 ```sh
 brew install xcodegen
-BUNDLE_ID=com.yourname.pano360 DEVELOPMENT_TEAM=ABCDE12345 BUILD_NUMBER=1 xcodegen generate
+DEVELOPMENT_TEAM=ABCDE12345 BUILD_NUMBER=1 xcodegen generate
 open Pano360.xcodeproj
 ```
 
@@ -109,7 +109,7 @@ Repository **secrets**:
 | `APP_STORE_CONNECT_API_KEY` | Contents of `AuthKey_XXXX.p8`, raw or base64 |
 | `APPLE_TEAM_ID` | 10-character team ID |
 
-Repository **variable** (or secret): `BUNDLE_ID`, for example `com.yourname.pano360`.
+The bundle ID `com.moritzwolf.pano360` is set in `project.yml`.
 
 Requirements:
 - The API key needs the **Admin** role. Cloud-managed signing has to create the
