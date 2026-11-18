@@ -1,6 +1,17 @@
 import AVFoundation
+import PanoramaCore
 import RealityKit
 import SwiftUI
+
+/// Everything the stitcher needs from a capture session.
+struct CaptureResult {
+    let shots: [CapturedShot]
+    let sessionDirectory: URL
+    /// ARKit feature points (world coordinates) for metric depth.
+    let scenePoints: [Vec3]
+    /// Resolves when all shots are merged and written to disk.
+    let waitForProcessing: () async -> Void
+}
 
 struct ARViewContainer: UIViewRepresentable {
     let arView: ARView
@@ -11,7 +22,7 @@ struct ARViewContainer: UIViewRepresentable {
 /// Camera screen: live AR camera, captured photos pinned in place, a fixed aiming
 /// circle in the middle and the target dot to move it onto.
 struct CaptureView: View {
-    var onFinish: ([CapturedShot], URL) -> Void
+    var onFinish: (CaptureResult) -> Void
     var onOpenGallery: () -> Void
 
     @State private var session = CaptureSession()
@@ -204,7 +215,10 @@ struct CaptureView: View {
         guard session.shots.count >= 2, !handedOff else { return }
         handedOff = true
         session.stop()
-        onFinish(session.shots, session.sessionDirectory)
+        let session = self.session
+        onFinish(CaptureResult(shots: session.shots, sessionDirectory: session.sessionDirectory,
+                               scenePoints: session.scenePoints,
+                               waitForProcessing: { await session.waitForProcessing() }))
     }
 }
 

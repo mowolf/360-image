@@ -36,6 +36,12 @@ feature matching → rotation bundle adjustment → gain compensation → seam s
 multi-band blending (Burt & Adelson 1983). Pano 360 implements that pipeline, with one
 change that matters on a phone: **the sensors already give each photo's orientation.**
 
+0. **Per-target exposure burst.** At every dot the app takes two full-resolution frames
+   at the locked exposure and one −2 EV frame. `ShotMerger` aligns them (ARKit rotation
+   homography plus a sub-pixel NCC shift), measures the real exposure ratios from the
+   data, rejects ghosts (people moving) and motion-blurred frames, and combines them with
+   **Mertens exposure fusion**. Lamps and windows keep their detail, noise averages out,
+   and every shot gets the sharpest frame as its reference.
 1. **Sensor-guided capture.** ARKit's visual-inertial tracking (`worldAlignment = .gravity`)
    gives every photo a camera-to-world rotation, usually accurate to under 1°, plus exact
    per-frame intrinsics. Photos come from `captureHighResolutionFrame` and are downscaled
@@ -55,17 +61,23 @@ change that matters on a phone: **the sensors already give each photo's orientat
    minimises the angular reprojection error of every correspondence, with a Huber loss.
    A weak prior towards the sensor pose fixes the gauge and keeps textureless photos
    (sky, ceilings) where ARKit put them. The horizon stays level because gravity is known.
-4. **Gain compensation.** Brown & Lowe's per-image gain, solved per colour channel from
-   overlap statistics on a small equirectangular grid.
-5. **Parallax compensation (LiDAR + ARKit position).** Handheld capture never rotates
-   exactly around the lens: turning your body moves the phone 10–40 cm, which shifts
-   nearby objects by many degrees between shots and causes ghosting and broken edges.
-   ARKit gives every shot's position, and on LiDAR iPhones (Pro models) the
-   `smoothedSceneDepth` map. Each pixel is lifted to 3D and re-projected from the
-   panorama centre, the mean capture position (`Projector`, a fixed-point solve on the
-   depth map). Alignment, bundle adjustment, gain estimation, seams and blending all use
-   this projection. The capture UI also warns when the phone drifts more than 8 cm from
-   its spot and blocks capture beyond 25 cm.
+4. **Vignetting + gain compensation.** A radial falloff V(r) = exp(a r² + b r⁴), shared
+   by all photos, and per-photo log gains are solved jointly by linear least squares
+   from overlapping samples. Then Brown & Lowe's per-image, per-channel gains.
+5. **Parallax compensation on every iPhone.** Handheld capture never rotates exactly
+   around the lens: turning your body moves the phone 10–40 cm, which shifts nearby
+   objects by many degrees between shots. Each pixel is lifted to 3D with a metric depth
+   map and re-projected from the panorama centre, the mean capture position
+   (`Projector`). Depth is fused per photo (`DepthFusion`) from:
+   - **LiDAR** `smoothedSceneDepth` on Pro models;
+   - **ARKit's tracked feature points** (`rawFeaturePoints`), logged during capture;
+   - **triangulated matches**: the phone's movement between shots is a stereo baseline,
+     and points are triangulated with bundle-adjusted rotations (a two-pass BA);
+   - **Depth Anything V2** (Apple's Core ML build, on the Neural Engine): dense
+     relative depth, fitted per photo to the metric points via a robust 1/z = s·d + t.
+
+   The capture UI also warns when the phone drifts more than 8 cm and blocks capture
+   beyond 25 cm.
 6. **Graph-cut seams** (Kwatra et al. 2003, Agarwala et al. 2004). Each panorama pixel
    is labelled with its source photo by minimizing data + seam costs with α-expansion
    (Boykov–Kolmogorov max-flow) on a 1536×768 grid. A seam between photos *a* and *b*
@@ -103,13 +115,28 @@ front of the user's turning axis, with LiDAR-like 64×48 depth maps:
 | + graph-cut seams | 16.7 dB | 4.6° |
 | + depth parallax compensation | **32.2 dB** | **0.02°** |
 
-Possible future improvements: optical-flow deghosting for iPhones without LiDAR, and a
-lens-distortion term in bundle adjustment.
+Without LiDAR, with only ARKit-like sparse points and a simulated monocular network
+(unknown scale and shift per photo, plus noise):
+
+| Depth source | PSNR |
+| --- | --- |
+| Triangulation only | 17.7 dB |
+| + ARKit feature points | 27.7 dB |
+| + monocular depth fitted to the points | **32.9 dB** (≈ LiDAR) |
+
+Vignetting with a corner falloff to 58%: estimated to within 0.1%, 28.5 → 37.7 dB.
+Burst fusion with lamps 10–15× brighter than the room: clipped pixels drop from 2339 to
+880, close to the 665 that are clipped even in the darkest frame. A person walking
+through one frame is rejected.
+
+Possible future improvements: optical-flow deghosting, a lens-distortion term in bundle
+adjustment, and Metal acceleration.
 
 ## Building locally
 
 ```sh
 brew install xcodegen
+scripts/fetch-models.sh   # optional: Depth Anything V2 Core ML model (~50 MB)
 DEVELOPMENT_TEAM=ABCDE12345 BUILD_NUMBER=1 xcodegen generate
 open Pano360.xcodeproj
 ```

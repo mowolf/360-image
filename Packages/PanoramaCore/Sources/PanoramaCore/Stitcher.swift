@@ -12,13 +12,17 @@ public struct StitchSource: Sendable {
     public var position: Vec3?
     /// Scene depth for the photo (LiDAR), used together with `position` to remove parallax.
     public var depth: DepthMap?
+    /// Monocular relative inverse depth (e.g. Depth Anything V2), scaled to metric depth
+    /// using ARKit feature points and triangulated matches.
+    public var relativeDepth: RelativeDepth?
 
     public init(intrinsics: Intrinsics, rotation: Mat3, position: Vec3? = nil, depth: DepthMap? = nil,
-                load: @escaping @Sendable () throws -> FloatImage) {
+                relativeDepth: RelativeDepth? = nil, load: @escaping @Sendable () throws -> FloatImage) {
         self.intrinsics = intrinsics
         self.rotation = rotation
         self.position = position
         self.depth = depth
+        self.relativeDepth = relativeDepth
         self.load = load
     }
 }
@@ -35,6 +39,8 @@ public struct StitchOptions: Sendable {
     public var seamGridWidth = 1536
     /// Use camera positions + depth maps (when present) to compensate parallax.
     public var compensateParallax = true
+    /// Estimate and remove lens vignetting (darker photo corners) from the overlaps.
+    public var correctVignetting = true
     /// Rotate the result so the first photo is in the middle of the panorama.
     public var centerOnFirstPhoto = true
     public init() {}
@@ -46,6 +52,7 @@ public enum StitchStage: String, Sendable {
     case optimizing = "Optimizing camera poses"
     case exposure = "Balancing exposure"
     case seams = "Finding seams"
+    case depth = "Estimating depth"
     case blending = "Blending"
     case finishing = "Finishing"
 }
@@ -58,6 +65,8 @@ public struct StitchReport: Sendable {
     public var rmsAfter = 0.0
     public var coverage = 0.0
     public var parallaxCompensated = false
+    public var depthSources = 0
+    public var vignette = Vignette()
     public var rotations: [Mat3] = []
     public var gains: [[Float]] = []
     public var seconds = 0.0
@@ -82,7 +91,10 @@ public final class Stitcher: @unchecked Sendable {
 
     public init() {}
 
-    public func stitch(_ sources: [StitchSource], options: StitchOptions = StitchOptions(),
+    /// - Parameter scenePoints: sparse 3D points of the scene in the same world frame as the
+    ///   sources' positions (ARKit's tracked feature points). Used to give every photo
+    ///   metric depth for parallax compensation, also on iPhones without LiDAR.
+    public func stitch(_ sources: [StitchSource], scenePoints: [Vec3] = [], options: StitchOptions = StitchOptions(),
                        progress: Progress? = nil) throws -> StitchResult {
         let start = Date()
         guard !sources.isEmpty else { throw StitchError.noImages }
@@ -99,12 +111,13 @@ public final class Stitcher: @unchecked Sendable {
         // Panorama centre = mean capture position; each camera keeps its offset from it.
         var offsets = [Vec3](repeating: .zero, count: n)
         let positions = sources.compactMap { $0.position }
-        if options.compensateParallax && positions.count == n {
-            let c = positions.reduce(Vec3.zero, +) / Double(n)
-            offsets = positions.map { $0 - c }
+        let hasPositions = options.compensateParallax && positions.count == n
+        var panoCenter = Vec3.zero
+        if hasPositions {
+            panoCenter = positions.reduce(Vec3.zero, +) / Double(n)
+            offsets = positions.map { $0 - panoCenter }
         }
-        let depths: [DepthMap?] = sources.map { options.compensateParallax ? $0.depth : nil }
-        report.parallaxCompensated = depths.contains { $0 != nil } && offsets.contains { $0.length > 1e-4 }
+        var depths: [DepthMap?] = sources.map { options.compensateParallax ? $0.depth : nil }
         func camera(_ k: Int, _ K: Intrinsics, _ R: Mat3) -> PanoCamera {
             PanoCamera(intrinsics: K, rotation: R, offset: offsets[k], depth: depths[k])
         }
@@ -143,22 +156,53 @@ public final class Stitcher: @unchecked Sendable {
             let pairs = aligner.alignAll(gray: gray, cameras: cams) { progress?(.aligning, $0) }
             if isCancelled() { throw StitchError.cancelled }
             report.pairsAligned = pairs.count
-            let matches = pairs.flatMap { $0.matches }
+            var matches = pairs.flatMap { $0.matches }
             report.matches = matches.count
 
-            // 3. Global bundle adjustment.
-            progress?(.optimizing, 0)
-            if !matches.isEmpty {
-                let focal = grayK.map { $0.fx }.reduce(0, +) / Double(n)
-                let ba = BundleAdjuster(focal: focal)
-                let res = ba.optimize(initial: rotations, matches: matches, offsets: offsets)
+            let sensorRotations = rotations
+            let focal = grayK.map { $0.fx }.reduce(0, +) / Double(n)
+            func attachPoints() {
+                let projectors = (0..<n).map { camera($0, grayK[$0], rotations[$0]).projector }
+                for m in 0..<matches.count {
+                    let a = matches[m]
+                    if let p = grayK[a.i].project(a.rayI) { matches[m].pointI = projectors[a.i].cameraPoint(u: p.u, v: p.v) }
+                    if let p = grayK[a.j].project(a.rayJ) { matches[m].pointJ = projectors[a.j].cameraPoint(u: p.u, v: p.v) }
+                }
+            }
+            func bundleAdjust(start: [Mat3]) {
+                guard !matches.isEmpty else { return }
+                let res = BundleAdjuster(focal: focal).optimize(initial: sensorRotations, matches: matches,
+                                                                 offsets: offsets, start: start)
                 rotations = res.rotations
-                report.rmsBefore = res.initialRMS
+                if report.rmsBefore == 0 { report.rmsBefore = res.initialRMS }
                 report.rmsAfter = res.finalRMS
+            }
+
+            // 3. Global bundle adjustment, interleaved with metric depth estimation:
+            //    pass 1 uses LiDAR / ARKit feature points / monocular depth, pass 2 adds points
+            //    triangulated from the matches with the refined rotations (the phone's movement
+            //    between shots is the stereo baseline).
+            progress?(.optimizing, 0)
+            if hasPositions && offsets.contains(where: { $0.length > 0.005 }) {
+                progress?(.depth, 0)
+                depths = estimateDepths(sources: sources, cloudRotations: sensorRotations, rotations: rotations,
+                                        offsets: offsets, center: panoCenter, scenePoints: scenePoints, matches: [])
+                attachPoints()
+                bundleAdjust(start: sensorRotations)
+                progress?(.depth, 0.5)
+                depths = estimateDepths(sources: sources, cloudRotations: sensorRotations, rotations: rotations,
+                                        offsets: offsets, center: panoCenter, scenePoints: scenePoints, matches: matches)
+                attachPoints()
+                bundleAdjust(start: rotations)
+                report.depthSources = depths.filter { $0 != nil }.count
+                progress?(.depth, 1)
+            } else {
+                bundleAdjust(start: sensorRotations)
             }
             progress?(.optimizing, 1)
         }
         gray = []
+        report.parallaxCompensated = depths.contains { $0 != nil } && offsets.contains { $0.length > 1e-4 }
 
         if options.centerOnFirstPhoto {
             let lon0 = Equirect.lonLat(rotations[0] * Vec3(0, 0, -1)).lon
@@ -170,10 +214,16 @@ public final class Stitcher: @unchecked Sendable {
 
         // 4. Gain compensation.
         var gains = [[Float]](repeating: [1, 1, 1], count: n)
+        var vignette = Vignette()
         if options.compensateGain && n > 1 {
             progress?(.exposure, 0)
             let cams = (0..<n).map { camera($0, thumbK[$0], rotations[$0]) }
-            gains = GainCompensator().gains(thumbs: thumbs, cameras: cams)
+            let res = GainCompensator().compensate(thumbs: thumbs, cameras: cams,
+                                                   estimateVignetting: options.correctVignetting)
+            gains = res.gains
+            vignette = res.vignette
+            report.vignette = vignette
+            for k in 0..<n { vignette.correct(&seamImgs[k], K: seamK[k]) }
             progress?(.exposure, 1)
         }
         thumbs = []
@@ -213,6 +263,7 @@ public final class Stitcher: @unchecked Sendable {
             var img = try sources[k].load()
             var K = Self.matchIntrinsics(sources[k].intrinsics, to: img)
             while K.fx > blendK[k].fx * 1.01 { img = Pyramid.reduce(img); K = Self.halved(K, img) }
+            vignette.correct(&img, K: K)
             blender.blend(index: k, image: img, camera: camera(k, K, rotations[k]), gain: gains[k])
             progress?(.blending, Double(k + 1) / Double(n))
         }
@@ -222,6 +273,40 @@ public final class Stitcher: @unchecked Sendable {
         report.seconds = Date().timeIntervalSince(start)
         progress?(.finishing, 1)
         return StitchResult(panorama: pano, report: report)
+    }
+
+    /// Fuses all depth cues into a metric depth map per photo.
+    func estimateDepths(sources: [StitchSource], cloudRotations: [Mat3], rotations: [Mat3], offsets: [Vec3],
+                        center: Vec3, scenePoints: [Vec3], matches: [RayMatch]) -> [DepthMap?] {
+        let n = sources.count
+        var samples = [[DepthSample]](repeating: [], count: n)
+        func addSample(_ k: Int, _ X: Vec3, weight: Double, sensorFrame: Bool) {
+            // X relative to the panorama centre.
+            let c = (sensorFrame ? cloudRotations[k] : rotations[k]).transposed * (X - offsets[k])
+            let z = -c.z
+            if z < 0.1 || z > 60 { return }
+            let K = sources[k].intrinsics
+            guard let p = K.project(c), p.u >= 0, p.v >= 0, p.u <= Double(K.width - 1), p.v <= Double(K.height - 1) else { return }
+            samples[k].append(DepthSample(u: p.u, v: p.v, z: z, weight: weight))
+        }
+        // ARKit's tracked feature points.
+        for P in scenePoints {
+            let X = P - center
+            for k in 0..<n { addSample(k, X, weight: 1, sensorFrame: true) }
+        }
+        // Triangulated matches: the phone's movement between shots is the stereo baseline.
+        for m in matches {
+            let d1 = rotations[m.i] * m.rayI, d2 = rotations[m.j] * m.rayJ
+            guard let X = DepthFusion.triangulate(o1: offsets[m.i], d1: d1, o2: offsets[m.j], d2: d2) else { continue }
+            addSample(m.i, X, weight: 1, sensorFrame: false)
+            addSample(m.j, X, weight: 1, sensorFrame: false)
+        }
+        return (0..<n).map { k in
+            let K = sources[k].intrinsics
+            let fused = DepthFusion.fuse(imageWidth: K.width, imageHeight: K.height, lidar: sources[k].depth,
+                                         relative: sources[k].relativeDepth, samples: samples[k])
+            return fused ?? sources[k].depth
+        }
     }
 
     /// Intrinsics after a pyramid REDUCE (pixel m of the new image is centred on pixel 2m).

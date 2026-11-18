@@ -25,7 +25,7 @@ public struct BundleAdjuster: Sendable {
     /// - Parameter offsets: camera positions relative to the panorama centre (world). With
     ///   depth-carrying matches, residuals compare directions from the panorama centre, so
     ///   parallax from the phone moving between shots is not mistaken for rotation error.
-    public func optimize(initial: [Mat3], matches: [RayMatch], offsets: [Vec3]? = nil) -> Result {
+    public func optimize(initial: [Mat3], matches: [RayMatch], offsets: [Vec3]? = nil, start: [Mat3]? = nil) -> Result {
         let n = initial.count
         let offs = offsets ?? [Vec3](repeating: .zero, count: n)
 
@@ -34,7 +34,7 @@ public struct BundleAdjuster: Sendable {
             guard let point, off.length > 1e-6 else { return R * ray }
             return (R * point + off).normalized
         }
-        var R = initial
+        var R = start ?? initial
         let dim = 3 * n
 
         func cost(_ R: [Mat3]) -> (Double, Double) {

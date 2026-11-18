@@ -191,3 +191,42 @@ final class StitcherTests: XCTestCase {
         }
     }
 }
+
+final class VignettingTests: XCTestCase {
+    func testVignettingIsEstimatedAndRemoved() throws {
+        let scene = SyntheticScene()
+        let K = SyntheticRig.intrinsics()
+        let truthV = Vignette(a: -0.45, b: -0.1)
+        let plan = CapturePlan(horizontalFOV: 2 * atan(Double(K.height) / 2 / K.fy),
+                               verticalFOV: 2 * atan(Double(K.width) / 2 / K.fx))
+        var rng = SplitMix(seed: 3)
+        var truth: [Mat3] = []
+        var sources: [StitchSource] = []
+        for t in plan.targets {
+            let R = SyntheticRig.portraitRotation(yaw: t.yaw + 1.5.radians * rng.normal(), pitch: t.pitch, roll: 0)
+            truth.append(R)
+            var img = scene.render(intrinsics: K, rotation: R, noise: 0.005, seed: UInt64(t.id))
+            for y in 0..<K.height { for x in 0..<K.width {
+                let f = Float(truthV.factor(r2: Vignette.radius2(u: Double(x), v: Double(y), K: K)))
+                for c in 0..<3 { img.data[(y * K.width + x) * 3 + c] *= f }
+            } }
+            let frozen = img
+            sources.append(StitchSource(intrinsics: K, rotation: R, load: { frozen }))
+        }
+        func run(_ correct: Bool) throws -> (Double, Vignette) {
+            var o = StitchOptions()
+            o.outputWidth = 2048
+            o.correctVignetting = correct
+            let res = try Stitcher().stitch(sources, options: o)
+            let G = res.report.rotations[0] * truth[0].transposed
+            let gt = scene.equirect(width: 2048, gauge: G)
+            return (TestImageIO.psnr(res.panorama, gt), res.report.vignette)
+        }
+        let (off, _) = try run(false)
+        let (on, v) = try run(true)
+        print("vignetting off \(off) dB, on \(on) dB, estimated a=\(v.a) b=\(v.b), corner factor \(v.factor(r2: 1)) (truth \(truthV.factor(r2: 1)))")
+        XCTAssertEqual(v.factor(r2: 1), truthV.factor(r2: 1), accuracy: 0.05)
+        XCTAssertEqual(v.factor(r2: 0.5), truthV.factor(r2: 0.5), accuracy: 0.04)
+        XCTAssertGreaterThan(on, off + 1)
+    }
+}

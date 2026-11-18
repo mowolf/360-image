@@ -21,9 +21,12 @@ final class StitchJob: Identifiable {
     @ObservationIgnored private let stitcher = Stitcher()
     @ObservationIgnored private var cancelled = false
 
-    init(shots: [CapturedShot], sessionDirectory: URL, library: PanoramaLibrary) {
-        self.shots = shots
-        self.sessionDirectory = sessionDirectory
+    @ObservationIgnored private let capture: CaptureResult
+
+    init(capture: CaptureResult, library: PanoramaLibrary) {
+        self.capture = capture
+        self.shots = capture.shots
+        self.sessionDirectory = capture.sessionDirectory
         self.library = library
     }
 
@@ -39,13 +42,7 @@ final class StitchJob: Identifiable {
     func start() {
         guard task == nil else { return }
         let shots = self.shots
-        let sources = shots.map { shot in
-            StitchSource(intrinsics: shot.intrinsics, rotation: shot.rotation, position: shot.position,
-                         depth: shot.depthURL.flatMap(DepthIO.read)) {
-                guard let cg = ImageSupport.loadCGImage(shot.url) else { throw CocoaError(.fileReadCorruptFile) }
-                return ImageSupport.floatImage(from: cg)
-            }
-        }
+        let capture = self.capture
         var options = StitchOptions()
         options.outputWidth = Self.outputWidth
         stitcher.isCancelled = { [weak self] in self?.cancelled ?? true }
@@ -54,7 +51,17 @@ final class StitchJob: Identifiable {
         task = Task.detached(priority: .userInitiated) { [weak self, stitcher, library, sessionDirectory] in
             defer { Task { @MainActor in UIApplication.shared.endBackgroundTask(bgTask) } }
             do {
-                let res = try stitcher.stitch(sources, options: options) { stage, p in
+                // Shots are merged/written in the background during capture; wait for the last ones.
+                await capture.waitForProcessing()
+                let sources = shots.map { shot in
+                    StitchSource(intrinsics: shot.intrinsics, rotation: shot.rotation, position: shot.position,
+                                 depth: shot.depthURL.flatMap(DepthIO.read),
+                                 relativeDepth: shot.relativeDepthURL.flatMap(DepthIO.readRelative)) {
+                        guard let cg = ImageSupport.loadCGImage(shot.url) else { throw CocoaError(.fileReadCorruptFile) }
+                        return ImageSupport.floatImage(from: cg)
+                    }
+                }
+                let res = try stitcher.stitch(sources, scenePoints: capture.scenePoints, options: options) { stage, p in
                     Task { @MainActor in
                         self?.stage = stage
                         self?.progress = p

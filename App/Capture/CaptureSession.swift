@@ -16,6 +16,8 @@ struct CapturedShot: Identifiable, Sendable {
     let position: Vec3
     /// LiDAR depth saved next to the photo (Pro models), used for parallax compensation.
     let depthURL: URL?
+    /// Monocular relative depth (Depth Anything V2), all devices.
+    let relativeDepthURL: URL?
 }
 
 /// Drives the guided capture: tracks the phone's orientation with ARKit, decides which
@@ -58,6 +60,14 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     @ObservationIgnored let sessionDirectory: URL
     /// Mean position of the photos taken so far (the panorama's centre).
     @ObservationIgnored private var anchorPosition: Vec3?
+    @ObservationIgnored private var baseExposure: (CMTime, Float)?
+    @ObservationIgnored private var videoFrameWaiter: (Int, CheckedContinuation<ARFrame?, Never>)?
+    @ObservationIgnored private var featurePoints: [UInt64: SIMD3<Float>] = [:]
+    @ObservationIgnored private var frameCounter = 0
+    @ObservationIgnored private let processingQueue = DispatchQueue(label: "pano.shot-processing", qos: .userInitiated)
+    @ObservationIgnored private let processingGroup = DispatchGroup()
+    /// Exposure bracketing per target (HDR). Can be turned off for faster capture.
+    var hdrBracketing = true
 
     // Tuning
     private let alignTolerance = 3.5.radians
@@ -67,6 +77,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     private let photoMaxLongSide = 2048
     private let driftWarnDistance = 0.08
     private let driftBlockDistance = 0.25
+    private let maxFeaturePoints = 40_000
 
     override init() {
         arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
@@ -100,6 +111,10 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     }
 
     func stop() {
+        if let (_, cont) = videoFrameWaiter {
+            videoFrameWaiter = nil
+            cont.resume(returning: nil)
+        }
         arView.session.pause()
         UIApplication.shared.isIdleTimerDisabled = false
     }
@@ -116,6 +131,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         guard let last = shots.popLast() else { return }
         updateAnchor()
         if let d = last.depthURL { try? FileManager.default.removeItem(at: d) }
+        if let d = last.relativeDepthURL { try? FileManager.default.removeItem(at: d) }
         capturedTargets.remove(last.targetID)
         if let anchor = previewAnchors.removeValue(forKey: last.id) {
             arView.scene.removeAnchor(anchor)
@@ -131,6 +147,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         previewAnchors.removeAll()
         shots.removeAll()
         anchorPosition = nil
+        featurePoints.removeAll()
         capturedTargets.removeAll()
         plan = nil
         phase = .starting
@@ -141,6 +158,15 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     // MARK: ARSessionDelegate
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        if let (skip, cont) = videoFrameWaiter {
+            if skip <= 0 {
+                videoFrameWaiter = nil
+                cont.resume(returning: frame)
+            } else {
+                videoFrameWaiter = (skip - 1, cont)
+            }
+        }
+        accumulateFeaturePoints(frame)
         update(with: frame)
     }
 
@@ -270,91 +296,185 @@ final class CaptureSession: NSObject, ARSessionDelegate {
 
     // MARK: Capture
 
+    /// One grabbed camera frame (pixel buffer released as soon as it is converted).
+    private struct GrabbedFrame {
+        let image: CGImage
+        let intrinsics: Intrinsics
+        let pose: simd_float4x4
+        let exposure: Double
+        let depth: ARDepthData?
+    }
+
+    /// Captures the burst for one target: two full-resolution frames at the locked exposure
+    /// (the sharper one becomes the reference, the other averages out noise) plus a −2 EV
+    /// video frame that keeps lamps and windows from blowing out. Files are merged and
+    /// written on a background queue so the user can move on immediately.
     private func capture(target: CaptureTarget, fallbackFrame: ARFrame) {
         isCapturingPhoto = true
-        let fallbackPose = fallbackFrame.camera.transform
-        let fallbackK = fallbackFrame.camera.intrinsics
-        let fallbackRes = fallbackFrame.camera.imageResolution
-        let fallbackBuffer = fallbackFrame.capturedImage
-        let fallbackDepth = fallbackFrame.smoothedSceneDepth ?? fallbackFrame.sceneDepth
-        arView.session.captureHighResolutionFrame { [weak self] hiRes, _ in
-            guard let self else { return }
-            let pose = hiRes?.camera.transform ?? fallbackPose
-            let k = hiRes?.camera.intrinsics ?? fallbackK
-            let res = hiRes?.camera.imageResolution ?? fallbackRes
-            let buffer = hiRes?.capturedImage ?? fallbackBuffer
-            let depth = hiRes?.smoothedSceneDepth ?? hiRes?.sceneDepth ?? fallbackDepth
-            DispatchQueue.global(qos: .userInitiated).async {
-                let result = self.process(buffer: buffer, intrinsics: k, resolution: res, pose: pose,
-                                          depth: depth, target: target)
-                DispatchQueue.main.async { self.finishCapture(result) }
+        lockExposureIfNeeded()
+        Task { @MainActor in
+            var frames: [GrabbedFrame] = []
+            for _ in 0..<2 {
+                if let f = await self.grabHighResolution() { frames.append(f) }
+            }
+            if frames.isEmpty, let f = self.convert(fallbackFrame, exposure: 1) { frames.append(f) }
+            if self.hdrBracketing, !frames.isEmpty, await self.setExposure(ev: -2) {
+                if let dark = await self.grabVideoFrame(skip: 2, exposure: 0.25) { frames.append(dark) }
+                _ = await self.setExposure(ev: 0)
+            }
+            guard let first = frames.first else {
+                self.isCapturingPhoto = false
+                return
+            }
+            self.finishCapture(target: target, frames: frames, preview: first)
+        }
+    }
+
+    private func grabHighResolution() async -> GrabbedFrame? {
+        await withCheckedContinuation { cont in
+            arView.session.captureHighResolutionFrame { [weak self] frame, _ in
+                guard let self, let frame else { cont.resume(returning: nil); return }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    cont.resume(returning: self.convert(frame, exposure: 1))
+                }
             }
         }
     }
 
-    private struct ProcessedShot {
-        let shot: CapturedShot
-        let preview: CGImage
-        let position: SIMD3<Float>
+    /// Waits for a later video frame (after an exposure change has taken effect).
+    private func grabVideoFrame(skip: Int, exposure: Double) async -> GrabbedFrame? {
+        let frame: ARFrame? = await withCheckedContinuation { cont in
+            videoFrameWaiter = (skip, cont)
+        }
+        guard let frame else { return nil }
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.convert(frame, exposure: exposure))
+            }
+        }
     }
 
-    private func process(buffer: CVPixelBuffer, intrinsics k: simd_float3x3, resolution: CGSize,
-                         pose: simd_float4x4, depth: ARDepthData?, target: CaptureTarget) -> ProcessedShot? {
+    private func convert(_ frame: ARFrame, exposure: Double) -> GrabbedFrame? {
+        let buffer = frame.capturedImage
         guard let image = ImageSupport.cgImage(from: buffer, maxLongSide: photoMaxLongSide) else { return nil }
+        let res = frame.camera.imageResolution
+        var K = Intrinsics(frame.camera.intrinsics, width: Int(res.width), height: Int(res.height))
         let bufW = CVPixelBufferGetWidth(buffer), bufH = CVPixelBufferGetHeight(buffer)
-        // ARKit intrinsics refer to camera.imageResolution; rescale to the pixel buffer, then to the saved image.
-        var K = Intrinsics(k, width: Int(resolution.width), height: Int(resolution.height))
         if K.width != bufW || K.height != bufH { K = K.scaled(toWidth: bufW, height: bufH) }
         K = K.scaled(toWidth: image.width, height: image.height)
-        let id = UUID()
-        let url = sessionDirectory.appendingPathComponent("\(id.uuidString).jpg")
-        guard ImageSupport.writeJPEG(image, to: url, quality: 0.93) else { return nil }
-        let preview = ImageSupport.downscaled(image, maxLongSide: 512) ?? image
-        let pos = SIMD3<Float>(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
-        var depthURL: URL?
-        if let depth {
-            let dURL = sessionDirectory.appendingPathComponent("\(id.uuidString).depth")
-            if DepthIO.write(depth, to: dURL) { depthURL = dURL }
-        }
-        let shot = CapturedShot(id: id, targetID: target.id, url: url, intrinsics: K, rotation: Mat3(pose),
-                                position: Vec3(pos), depthURL: depthURL)
-        return ProcessedShot(shot: shot, preview: preview, position: pos)
+        return GrabbedFrame(image: image, intrinsics: K, pose: frame.camera.transform, exposure: exposure,
+                            depth: frame.smoothedSceneDepth ?? frame.sceneDepth)
     }
 
-    private func finishCapture(_ result: ProcessedShot?) {
+    private func finishCapture(target: CaptureTarget, frames: [GrabbedFrame], preview first: GrabbedFrame) {
         isCapturingPhoto = false
         holdProgress = 0
-        guard let result, phase == .capturing else { return }
-        shots.append(result.shot)
-        capturedTargets.insert(result.shot.targetID)
+        guard phase == .capturing else { return }
+        let id = UUID()
+        let url = sessionDirectory.appendingPathComponent("\(id.uuidString).jpg")
+        let depthURL = first.depth != nil ? sessionDirectory.appendingPathComponent("\(id.uuidString).depth") : nil
+        let relURL = DepthEstimator.shared.isAvailable ? sessionDirectory.appendingPathComponent("\(id.uuidString).rel") : nil
+        let pose = first.pose
+        let pos = SIMD3<Float>(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
+        let shot = CapturedShot(id: id, targetID: target.id, url: url, intrinsics: first.intrinsics,
+                                rotation: Mat3(pose), position: Vec3(pos), depthURL: depthURL,
+                                relativeDepthURL: relURL)
+        shots.append(shot)
+        capturedTargets.insert(target.id)
         updateAnchor()
         haptics.impactOccurred()
-        lockExposureIfNeeded()
+
+        // Merge + save in the background (serially, to bound memory).
+        processingGroup.enter()
+        processingQueue.async { [processingGroup] in
+            defer { processingGroup.leave() }
+            let merged = Self.merge(frames)
+            ImageSupport.writeJPEG(merged, to: url, quality: 0.93)
+            if let depthURL, let d = first.depth { _ = DepthIO.write(d, to: depthURL) }
+            if let relURL { DepthEstimator.shared.estimate(merged, saveTo: relURL) }
+        }
+
+        let preview = ImageSupport.downscaled(first.image, maxLongSide: 512) ?? first.image
         let radius = Float(1.6) - Float(shots.count) * 0.006
         Task { @MainActor in
-            if let anchor = await ShotPreviewMesh.makeAnchor(shot: result.shot, preview: result.preview,
-                                                             cameraPosition: result.position, radius: radius) {
+            if let anchor = await ShotPreviewMesh.makeAnchor(shot: shot, preview: preview,
+                                                             cameraPosition: pos, radius: radius) {
                 // The shot may have been undone while the texture loaded.
-                guard self.shots.contains(where: { $0.id == result.shot.id }) else { return }
+                guard self.shots.contains(where: { $0.id == shot.id }) else { return }
                 self.arView.scene.addAnchor(anchor)
-                self.previewAnchors[result.shot.id] = anchor
+                self.previewAnchors[shot.id] = anchor
+            }
+        }
+    }
+
+    /// Exposure-fuses the burst onto the first frame's geometry.
+    private static func merge(_ frames: [GrabbedFrame]) -> CGImage {
+        guard frames.count > 1 else { return frames[0].image }
+        let burst = frames.map {
+            BurstFrame(image: ImageSupport.floatImage(from: $0.image), intrinsics: $0.intrinsics,
+                       rotation: Mat3($0.pose), exposure: $0.exposure)
+        }
+        let (fused, _) = ShotMerger.merge(burst, reference: 0)
+        return ImageSupport.cgImage(from: fused) ?? frames[0].image
+    }
+
+    /// Resolves once every captured shot has been merged and written to disk.
+    func waitForProcessing() async {
+        await withCheckedContinuation { cont in
+            processingGroup.notify(queue: .main) { cont.resume() }
+        }
+    }
+
+    /// ARKit's tracked 3D feature points, accumulated over the session (world coordinates).
+    var scenePoints: [Vec3] {
+        featurePoints.values.map { Vec3(Double($0.x), Double($0.y), Double($0.z)) }
+    }
+
+    private func accumulateFeaturePoints(_ frame: ARFrame) {
+        frameCounter += 1
+        guard frameCounter % 6 == 0, let cloud = frame.rawFeaturePoints else { return }
+        for (id, p) in zip(cloud.identifiers, cloud.points) {
+            if featurePoints[id] != nil || featurePoints.count < maxFeaturePoints {
+                featurePoints[id] = p
             }
         }
     }
 
     // MARK: Exposure
 
-    /// Locks exposure and white balance after the first photo so all photos match. Focus
+    /// Locks exposure and white balance before the first photo so all photos match. Focus
     /// stays automatic: near walls and tables must stay sharp.
     private func lockExposureIfNeeded() {
         guard !exposureLocked, let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
         do {
             try device.lockForConfiguration()
+            baseExposure = (device.exposureDuration, device.iso)
             if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
             if device.isWhiteBalanceModeSupported(.locked) { device.whiteBalanceMode = .locked }
             device.unlockForConfiguration()
             exposureLocked = true
         } catch {}
+    }
+
+    /// Sets a custom exposure `ev` stops relative to the locked base exposure.
+    private func setExposure(ev: Double) async -> Bool {
+        guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera,
+              let base = baseExposure, device.isExposureModeSupported(.custom) else { return false }
+        let format = device.activeFormat
+        let minD = CMTimeGetSeconds(format.minExposureDuration)
+        let maxD = min(CMTimeGetSeconds(format.maxExposureDuration), 1.0 / 15)
+        let target = CMTimeGetSeconds(base.0) * Double(base.1) * pow(2, ev) // duration × ISO
+        var duration = max(minD, min(maxD, CMTimeGetSeconds(base.0) * pow(2, ev)))
+        var iso = Float(target / duration)
+        iso = max(format.minISO, min(format.maxISO, iso))
+        duration = max(minD, min(maxD, target / Double(iso)))
+        do { try device.lockForConfiguration() } catch { return false }
+        return await withCheckedContinuation { cont in
+            device.setExposureModeCustom(duration: CMTime(seconds: duration, preferredTimescale: 1_000_000), iso: iso) { _ in
+                cont.resume(returning: true)
+            }
+            device.unlockForConfiguration()
+        }
     }
 
     private func unlockExposure() {
@@ -365,6 +485,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { device.whiteBalanceMode = .continuousAutoWhiteBalance }
             device.unlockForConfiguration()
             exposureLocked = false
+            baseExposure = nil
         } catch {}
     }
 }

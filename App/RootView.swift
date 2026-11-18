@@ -10,8 +10,8 @@ struct RootView: View {
 
     var body: some View {
         CaptureView(
-            onFinish: { shots, sessionDirectory in
-                job = StitchJob(shots: shots, sessionDirectory: sessionDirectory, library: library)
+            onFinish: { result in
+                job = StitchJob(capture: result, library: library)
             },
             onOpenGallery: { showGallery = true }
         )

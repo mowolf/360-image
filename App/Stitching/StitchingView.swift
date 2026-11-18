@@ -63,6 +63,7 @@ struct StitchingView: View {
         case .preparing: return 0.10 * p
         case .aligning: return 0.10 + 0.35 * p
         case .optimizing: return 0.45 + 0.05 * p
+        case .depth: return 0.45 + 0.05 * p
         case .exposure: return 0.50 + 0.03 * p
         case .seams: return 0.53 + 0.07 * p
         case .blending: return 0.60 + 0.35 * p

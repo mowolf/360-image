@@ -54,4 +54,23 @@ enum DepthIO {
         _ = values.withUnsafeMutableBytes { data.copyBytes(to: $0, from: 8..<data.count) }
         return DepthMap(width: w, height: h, depth: values)
     }
+
+    static func writeRelative(_ values: [Float], width w: Int, height h: Int, to url: URL) {
+        var out = Data()
+        var w32 = Int32(w), h32 = Int32(h)
+        withUnsafeBytes(of: &w32) { out.append(contentsOf: $0) }
+        withUnsafeBytes(of: &h32) { out.append(contentsOf: $0) }
+        values.withUnsafeBytes { out.append(contentsOf: $0) }
+        try? out.write(to: url)
+    }
+
+    static func readRelative(_ url: URL) -> RelativeDepth? {
+        guard let data = try? Data(contentsOf: url), data.count >= 8 else { return nil }
+        let w = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: Int32.self) })
+        let h = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: Int32.self) })
+        guard w > 0, h > 0, data.count == 8 + w * h * 4 else { return nil }
+        var values = [Float](repeating: 0, count: w * h)
+        _ = values.withUnsafeMutableBytes { data.copyBytes(to: $0, from: 8..<data.count) }
+        return RelativeDepth(width: w, height: h, values: values)
+    }
 }

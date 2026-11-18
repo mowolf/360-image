@@ -31,6 +31,11 @@ targets:
     platform: iOS
     sources:
       - path: App
+      # Depth Anything V2 (downloaded by scripts/fetch-models.sh; optional for local builds)
+      - path: Models/DepthAnythingV2SmallF16.mlpackage
+        type: file
+        buildPhase: sources
+        optional: true
     dependencies:
       - package: PanoramaCore
     settings:

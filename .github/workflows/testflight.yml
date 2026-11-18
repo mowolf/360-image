@@ -55,6 +55,8 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Fetch Core ML depth model
+        run: scripts/fetch-models.sh
 
       - name: Generate project
         run: |
