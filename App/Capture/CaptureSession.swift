@@ -92,6 +92,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         arView.session.delegate = self
     }
 
+    @MainActor
     func start() {
         guard ARWorldTrackingConfiguration.isSupported else {
             phase = .failed("This device does not support ARKit world tracking.")
@@ -117,6 +118,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         haptics.prepare()
     }
 
+    @MainActor
     func stop() {
         if let (_, cont) = videoFrameWaiter {
             videoFrameWaiter = nil
@@ -152,6 +154,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         if shots.isEmpty { unlockExposure() }
     }
 
+    @MainActor
     func restart() {
         for s in shots { try? FileManager.default.removeItem(at: s.url) }
         for a in previewAnchors.values { arView.scene.removeAnchor(a) }
