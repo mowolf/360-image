@@ -21,7 +21,12 @@ struct StitchingView: View {
                 progressView
             }
         }
-        .onAppear { job.start() }
+        .onAppear {
+            // Stay awake while stitching (it can take a while for large captures).
+            ScreenKeeper.hold()
+            job.start()
+        }
+        .onDisappear { ScreenKeeper.release() }
     }
 
     private var progressView: some View {

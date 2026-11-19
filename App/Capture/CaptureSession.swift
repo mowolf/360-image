@@ -64,6 +64,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     /// Mean position of the photos taken so far (the panorama's centre).
     @ObservationIgnored private var anchorPosition: Vec3?
     @ObservationIgnored private var baseExposure: (CMTime, Float)?
+    @ObservationIgnored private var holdingScreen = false
     @ObservationIgnored private var videoFrameWaiter: (Int, CheckedContinuation<ARFrame?, Never>)?
     @ObservationIgnored private var featurePoints: [UInt64: SIMD3<Float>] = [:]
     @ObservationIgnored private var frameCounter = 0
@@ -108,7 +109,11 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             config.frameSemantics.insert(.smoothedSceneDepth)
         }
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
-        UIApplication.shared.isIdleTimerDisabled = true
+        if !holdingScreen {
+            holdingScreen = true
+            ScreenKeeper.hold()
+        }
+        ScreenKeeper.pinBrightness()
         haptics.prepare()
     }
 
@@ -118,7 +123,11 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             cont.resume(returning: nil)
         }
         arView.session.pause()
-        UIApplication.shared.isIdleTimerDisabled = false
+        if holdingScreen {
+            holdingScreen = false
+            ScreenKeeper.release()
+        }
+        ScreenKeeper.unpinBrightness()
     }
 
     func discardFiles() {

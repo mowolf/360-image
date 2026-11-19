@@ -26,6 +26,7 @@ struct CaptureView: View {
     var onOpenGallery: () -> Void
 
     @State private var session = CaptureSession()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var cameraDenied = false
     @State private var confirmRestart = false
     @State private var handedOff = false
@@ -62,6 +63,15 @@ struct CaptureView: View {
         .onDisappear {
             session.stop()
             if !handedOff { session.discardFiles() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                ScreenKeeper.reassert()
+                if !cameraDenied && !handedOff { ScreenKeeper.pinBrightness() }
+            default:
+                ScreenKeeper.unpinBrightness()
+            }
         }
         .onChange(of: session.phase) { _, phase in
             if phase == .complete { finish() }
