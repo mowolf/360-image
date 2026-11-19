@@ -18,6 +18,8 @@ struct CapturedShot: Identifiable, Sendable {
     let depthURL: URL?
     /// Monocular relative depth (Depth Anything V2), all devices.
     let relativeDepthURL: URL?
+    /// GPS position + camera heading at capture time (if location access was granted).
+    var location: ShotLocation? = nil
 }
 
 /// Drives the guided capture: tracks the phone's orientation with ARKit, decides which
@@ -65,13 +67,16 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     @ObservationIgnored private var anchorPosition: Vec3?
     @ObservationIgnored private var baseExposure: (CMTime, Float)?
     @ObservationIgnored private var holdingScreen = false
+    @ObservationIgnored let locationRecorder = LocationRecorder()
+    /// While true (e.g. the intro card is shown) nothing is captured automatically.
+    var guidancePaused = false
     @ObservationIgnored private var videoFrameWaiter: (Int, CheckedContinuation<ARFrame?, Never>)?
     @ObservationIgnored private var featurePoints: [UInt64: SIMD3<Float>] = [:]
     @ObservationIgnored private var frameCounter = 0
     @ObservationIgnored private let processingQueue = DispatchQueue(label: "pano.shot-processing", qos: .userInitiated)
     @ObservationIgnored private let processingGroup = DispatchGroup()
-    /// Exposure bracketing per target (HDR). Can be turned off for faster capture.
-    var hdrBracketing = true
+    /// Exposure bracketing per target (HDR); can be turned off in Settings for faster capture.
+    var hdrBracketing: Bool { UserDefaults.standard.object(forKey: Settings.hdrBracketing) as? Bool ?? true }
 
     // Tuning
     private let alignTolerance = 3.5.radians
@@ -114,6 +119,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             holdingScreen = true
             ScreenKeeper.hold()
         }
+        locationRecorder.start()
         ScreenKeeper.pinBrightness()
         haptics.prepare()
     }
@@ -129,6 +135,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             holdingScreen = false
             ScreenKeeper.release()
         }
+        locationRecorder.stop()
         ScreenKeeper.unpinBrightness()
     }
 
@@ -310,7 +317,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             hint = shots.isEmpty ? "Point the circle at the dot" : "Move to the next dot"
         }
 
-        if isAligned && steady && !isCapturingPhoto, case .normal = frame.camera.trackingState {
+        if isAligned && steady && !isCapturingPhoto && !guidancePaused, case .normal = frame.camera.trackingState {
             holdTime += dt
             holdProgress = min(1, holdTime / holdDuration)
             if holdTime >= holdDuration {
@@ -418,7 +425,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         let pos = SIMD3<Float>(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
         let shot = CapturedShot(id: id, targetID: target.id, url: url, intrinsics: first.intrinsics,
                                 rotation: Mat3(pose), position: Vec3(pos), depthURL: depthURL,
-                                relativeDepthURL: relURL)
+                                relativeDepthURL: relURL, location: locationRecorder.snapshot())
         shots.append(shot)
         capturedTargets.insert(target.id)
         updateAnchor()

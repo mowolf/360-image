@@ -72,7 +72,15 @@ final class StitchJob: Identifiable {
                     }
                 }
                 guard let cg = ImageSupport.cgImage(from: res.panorama) else { throw CocoaError(.fileWriteUnknown) }
-                let item = try await library.save(panorama: cg, sourceCount: shots.count)
+                // Location of the panorama = the most accurate GPS fix among its photos;
+                // heading = direction of the first photo (the panorama's centre).
+                let location = shots.compactMap(\.location).min { $0.horizontalAccuracy < $1.horizontalAccuracy }
+                let heading = shots.first?.location?.heading
+                let item = try await library.save(panorama: cg, sourceCount: shots.count,
+                                                  location: location, heading: heading)
+                if UserDefaults.standard.bool(forKey: Settings.autoSaveToPhotos) {
+                    try? await PhotoSaver.save(item)
+                }
                 // Keep the raw capture for re-stitching / export.
                 if let folder = existingFolder ?? (try? CaptureStore.persist(capture)) {
                     library.link(item, captureFolder: folder)

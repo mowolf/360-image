@@ -53,26 +53,28 @@ struct PanoramaDetailView: View {
                         .background(.ultraThinMaterial, in: Circle())
                     }
                 }
-                ShareLink(item: item.url) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.headline)
-                        .frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                Button(action: saveToPhotos) {
+                Menu {
+                    ShareLink(item: item.url) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
+                    Button(action: saveToPhotos) {
+                        Label(saveState == .saved ? "Saved to Photos" : "Save to Photos",
+                              systemImage: saveState == .saved ? "checkmark" : "photo.badge.plus")
+                    }
+                    .disabled(saveState == .saving || saveState == .saved)
+                } label: {
                     Group {
                         switch saveState {
                         case .saving: ProgressView()
                         case .saved: Image(systemName: "checkmark")
-                        default: Image(systemName: "photo.badge.plus")
+                        default: Image(systemName: "square.and.arrow.up")
                         }
                     }
                     .font(.headline)
                     .frame(width: 44, height: 44)
                     .background(.ultraThinMaterial, in: Circle())
                 }
-                .disabled(saveState == .saving || saveState == .saved)
-                .accessibilityLabel("Save to Photos")
+                .accessibilityLabel("Share or save")
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 16)
@@ -111,7 +113,7 @@ struct PanoramaDetailView: View {
         saveState = .saving
         Task {
             do {
-                try await PanoramaLibrary.saveToPhotos(item)
+                try await PhotoSaver.save(item)
                 saveState = .saved
             } catch {
                 saveState = .failed(error.localizedDescription)

@@ -37,13 +37,15 @@ final class PanoramaLibrary {
             .sorted { $0.date > $1.date }
     }
 
-    func save(panorama: CGImage, sourceCount: Int) async throws -> PanoramaItem {
+    func save(panorama: CGImage, sourceCount: Int, location: ShotLocation? = nil,
+              heading: Double? = nil) async throws -> PanoramaItem {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let id = "PANO_\(formatter.string(from: Date()))"
         let url = directory.appendingPathComponent("\(id).jpg")
         let thumbURL = directory.appendingPathComponent("\(id)_thumb.jpg")
-        let meta = ImageSupport.photoSphereMetadata(width: panorama.width, height: panorama.height, imageCount: sourceCount)
+        let meta = ImageSupport.photoSphereMetadata(width: panorama.width, height: panorama.height, imageCount: sourceCount,
+                                                    location: location, heading: heading)
         guard ImageSupport.writeJPEG(panorama, to: url, quality: 0.9, metadata: meta) else {
             throw CocoaError(.fileWriteUnknown)
         }
@@ -84,15 +86,4 @@ final class PanoramaLibrary {
         return FileManager.default.fileExists(atPath: CaptureStore.root.appendingPathComponent(name).path) ? name : nil
     }
 
-    /// Saves the original JPEG (with its Photo-Sphere metadata intact) to the Photos library.
-    static func saveToPhotos(_ item: PanoramaItem) async throws {
-        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-        guard status == .authorized || status == .limited else {
-            throw NSError(domain: "Pano360", code: 1, userInfo: [NSLocalizedDescriptionKey: "Photos access was denied."])
-        }
-        try await PHPhotoLibrary.shared().performChanges {
-            let request = PHAssetCreationRequest.forAsset()
-            request.addResource(with: .photo, fileURL: item.url, options: nil)
-        }
-    }
 }

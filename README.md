@@ -26,6 +26,7 @@ classic Street View / Photo Sphere capture flow:
 | `project.yml` | XcodeGen project spec. The `.xcodeproj` is generated and not committed |
 | `.github/workflows/ci.yml` | Engine tests (Linux) and an unsigned iOS build on the `xcode-27` runner |
 | `.github/workflows/testflight.yml` | Archive, cloud-sign and upload to TestFlight |
+| `appstore/` | App Store listing texts (EN/DE), privacy policy, review notes, screenshot plan |
 
 ## Stitching: what algorithm, and why
 

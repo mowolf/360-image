@@ -101,7 +101,8 @@ enum ImageSupport {
 
     /// Google Photo Sphere XMP metadata, so Photos apps / Google Maps / Facebook recognise
     /// the JPEG as an interactive 360° panorama.
-    static func photoSphereMetadata(width: Int, height: Int, imageCount: Int) -> CGImageMetadata {
+    static func photoSphereMetadata(width: Int, height: Int, imageCount: Int,
+                                    location: ShotLocation? = nil, heading: Double? = nil) -> CGImageMetadata {
         let meta = CGImageMetadataCreateMutable()
         let ns = "http://ns.google.com/photos/1.0/panorama/" as CFString
         CGImageMetadataRegisterNamespaceForPrefix(meta, ns, "GPano" as CFString, nil)
@@ -113,7 +114,34 @@ enum ImageSupport {
         set("CaptureSoftware", "Pano360")
         set("StitchingSoftware", "Pano360")
         set("SourcePhotosCount", "\(imageCount)")
-        set("PoseHeadingDegrees", "0")
+        // Heading of the panorama's centre (the first photo), so viewers can align it with the map.
+        set("PoseHeadingDegrees", String(format: "%.1f", heading ?? 0))
+        if let location {
+            func gps(_ key: CFString, _ value: Any) {
+                _ = CGImageMetadataSetValueMatchingImageProperty(meta, kCGImagePropertyGPSDictionary, key, value as CFTypeRef)
+            }
+            gps(kCGImagePropertyGPSLatitude, abs(location.latitude))
+            gps(kCGImagePropertyGPSLatitudeRef, location.latitude >= 0 ? "N" : "S")
+            gps(kCGImagePropertyGPSLongitude, abs(location.longitude))
+            gps(kCGImagePropertyGPSLongitudeRef, location.longitude >= 0 ? "E" : "W")
+            gps(kCGImagePropertyGPSAltitude, abs(location.altitude))
+            gps(kCGImagePropertyGPSAltitudeRef, location.altitude >= 0 ? 0 : 1)
+            gps(kCGImagePropertyGPSHPositioningError, location.horizontalAccuracy)
+            if let heading {
+                gps(kCGImagePropertyGPSImgDirection, heading)
+                gps(kCGImagePropertyGPSImgDirectionRef, "T")
+            }
+            let f = DateFormatter()
+            f.timeZone = TimeZone(identifier: "UTC")
+            f.dateFormat = "yyyy:MM:dd"
+            gps(kCGImagePropertyGPSDateStamp, f.string(from: location.timestamp))
+            f.dateFormat = "HH:mm:ss"
+            gps(kCGImagePropertyGPSTimeStamp, f.string(from: location.timestamp))
+        }
+        let df = DateFormatter()
+        df.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        _ = CGImageMetadataSetValueMatchingImageProperty(meta, kCGImagePropertyExifDictionary,
+                                                         kCGImagePropertyExifDateTimeOriginal, df.string(from: Date()) as CFString)
         set("FullPanoWidthPixels", "\(width)")
         set("FullPanoHeightPixels", "\(height)")
         set("CroppedAreaImageWidthPixels", "\(width)")

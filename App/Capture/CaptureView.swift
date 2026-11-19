@@ -27,6 +27,7 @@ struct CaptureView: View {
 
     @State private var session = CaptureSession()
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(Settings.onboardingSeen) private var onboardingSeen = false
     @State private var cameraDenied = false
     @State private var confirmRestart = false
     @State private var handedOff = false
@@ -50,6 +51,12 @@ struct CaptureView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
 
+            if !onboardingSeen {
+                Color.black.opacity(0.45).ignoresSafeArea()
+                OnboardingCard { withAnimation { onboardingSeen = true } }
+                    .transition(.scale(scale: 0.95).combined(with: .opacity))
+            }
+
             if cameraDenied {
                 permissionView
             } else if case .failed(let message) = session.phase {
@@ -64,6 +71,8 @@ struct CaptureView: View {
             session.stop()
             if !handedOff { session.discardFiles() }
         }
+        .onAppear { session.guidancePaused = !onboardingSeen }
+        .onChange(of: onboardingSeen) { _, seen in session.guidancePaused = !seen }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
@@ -130,6 +139,13 @@ struct CaptureView: View {
                     .font(.subheadline.monospacedDigit().weight(.semibold))
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(.ultraThinMaterial, in: Capsule())
+                Button { withAnimation { onboardingSeen = false } } label: {
+                    Image(systemName: "info")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 32, height: 32)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .accessibilityLabel("How it works")
                 Spacer()
                 if !session.shots.isEmpty {
                     Button { confirmRestart = true } label: {

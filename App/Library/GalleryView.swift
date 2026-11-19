@@ -3,6 +3,7 @@ import SwiftUI
 struct GalleryView: View {
     @Environment(PanoramaLibrary.self) private var library
     @Environment(\.dismiss) private var dismiss
+    @State private var showSettings = false
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 12)]
 
@@ -20,6 +21,7 @@ struct GalleryView: View {
                                 NavigationLink(value: item) {
                                     GalleryCell(item: item)
                                 }
+                                .buttonStyle(.plain)
                                 .contextMenu {
                                     Button("Delete", systemImage: "trash", role: .destructive) { library.delete(item) }
                                 }
@@ -34,12 +36,18 @@ struct GalleryView: View {
                 PanoramaDetailView(item: item, isFreshCapture: false)
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
             .onAppear { library.reload() }
+            .sheet(isPresented: $showSettings) { SettingsView() }
         }
+        .tint(.white)
     }
 }
 

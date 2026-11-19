@@ -1,0 +1,1 @@
+Erste Version von Pano 360 – geführte 360°-Fotosphären-Aufnahme mit Stitching direkt auf dem Gerät.

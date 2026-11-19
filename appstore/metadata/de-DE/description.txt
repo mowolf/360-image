@@ -1,0 +1,29 @@
+Halte die ganze Welt um dich herum fest – oben, unten und rundherum – und mache daraus eine nahtlose 360°-Fotosphäre, direkt auf deinem iPhone.
+
+Pano 360 bringt die einfache, geführte Aufnahme von Fotosphären zurück: Richte den Kreis auf den Punkt, halte still, und das Foto wird automatisch aufgenommen. Danach erscheint ein neuer Punkt dort, wo das nächste Foto hingehört, und deine Aufnahmen werden direkt im Kamerabild angezeigt – so siehst du immer, was noch fehlt.
+
+SO FUNKTIONIERT'S
+• Kreis auf den Punkt richten – das Foto wird automatisch ausgelöst
+• Den Punkten rund um den Horizont, zum Himmel und zum Boden folgen
+• Jederzeit auf „Fertig" tippen – oder die ganze Sphäre aufnehmen
+• Pano 360 richtet aus, überblendet und exportiert in Sekunden ein 360°-Panorama
+
+PROFESSIONELLES STITCHING AUF DEM GERÄT
+• Präzise Ausrichtung mit ARKit-Bewegungserkennung, Merkmalsabgleich und Bündelausgleich
+• Parallaxenkorrektur mit Tiefe aus LiDAR, ARKit und On-Device-Machine-Learning
+• Intelligente Nähte, die um Personen und Objekte herumführen statt durch sie hindurch
+• Mehrband-Überblendung und Belichtungsausgleich für unsichtbare Übergänge
+• HDR-Aufnahme gegen ausgefressene Lampen, Fenster und Himmel
+• Automatische Vignettierungskorrektur und ein exakt gerader Horizont
+
+TEILEN IN 360°
+• Exportiert equirektangulare JPEGs mit Photo-Sphere-Metadaten (GPano)
+• Als interaktive 360°-Fotos in Google Fotos, Facebook und anderen 360°-Viewern
+• Optional automatisch in ein „Pano 360"-Album in Fotos speichern
+• GPS-Position und Blickrichtung werden eingebettet
+
+ERKUNDEN
+• Integrierter 360°-Viewer: Wischen oder iPhone bewegen, zum Zoomen aufziehen
+• Alles wird auf deinem iPhone verarbeitet – kein Konto, keine Uploads, kein Tracking
+
+Erfordert ein iPhone mit ARKit-Unterstützung. Am besten auf iPhones mit LiDAR (Pro-Modelle).
