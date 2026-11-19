@@ -164,6 +164,7 @@ final class ParallaxStitchTests: XCTestCase {
         }
         let center = positions.reduce(Vec3.zero, +) / Double(positions.count)
 
+        var tilts: [Double] = []
         func run(parallax: Bool, seams: Bool, name: String) throws -> Double {
             var o = StitchOptions()
             o.outputWidth = 2048
@@ -178,6 +179,12 @@ final class ParallaxStitchTests: XCTestCase {
             for k in 0..<truth.count {
                 errs.append((G.transposed * res.report.rotations[k] * truth[k].transposed).rotationVector.length.degrees)
             }
+            // Horizon: tilt of the average global rotation between solution and truth.
+            var qs = Vec3.zero
+            for k in 0..<truth.count { qs += (res.report.rotations[k] * truth[k].transposed) * Vec3(0, 1, 0) }
+            let tilt = qs.normalized.angle(to: Vec3(0, 1, 0)).degrees
+            tilts.append(tilt)
+            print("\(name): horizon tilt \(String(format: "%.3f", tilt))°")
             print("\(name): PSNR \(String(format: "%.2f", psnr)) dB, rot err mean \(String(format: "%.3f", errs.reduce(0, +) / Double(errs.count)))°, pairs \(res.report.pairsAligned)/\(res.report.pairsTried), \(String(format: "%.1f", res.report.seconds))s")
             if let dir = ProcessInfo.processInfo.environment["PANO_TEST_OUTPUT"] {
                 TestImageIO.writePPM(res.panorama, to: "\(dir)/parallax_\(name).ppm")
@@ -190,6 +197,8 @@ final class ParallaxStitchTests: XCTestCase {
         let full = try run(parallax: true, seams: true, name: "depth+graphcut")
         XCTAssertGreaterThan(seamsOnly, baseline)
         XCTAssertGreaterThan(full, baseline + 2)
+        // The horizon must stay level (ARKit's gravity is accurate; stitching must not tilt it).
+        XCTAssertLessThan(tilts[2], 0.1)
     }
 }
 

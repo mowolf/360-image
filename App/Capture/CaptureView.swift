@@ -102,6 +102,11 @@ struct CaptureView: View {
             AimingReticle(progress: session.holdProgress, aligned: session.isAligned,
                           capturing: session.isCapturingPhoto)
                 .position(center)
+
+            if let d = session.driftOffset {
+                DriftIndicator(offset: d)
+                    .position(x: center.x, y: center.y + 110)
+            }
         }
         .animation(.easeOut(duration: 0.12), value: session.isAligned)
     }
@@ -268,5 +273,35 @@ struct AimingReticle: View {
             }
         }
         .scaleEffect(aligned ? 1.08 : 1)
+    }
+}
+
+/// Bird's-eye guide back to the phone's spot: the ring is the spot, the dot is the phone
+/// (seen from above: left/right and closer/further), with the distance below.
+struct DriftIndicator: View {
+    var offset: SIMD3<Double>
+
+    var body: some View {
+        let scale = 120.0 // points per metre
+        let x = max(-26, min(26, offset.x * scale))
+        let y = max(-26, min(26, offset.z * scale)) // away from the user = up on screen
+        VStack(spacing: 4) {
+            ZStack {
+                Circle().fill(.black.opacity(0.35)).frame(width: 64, height: 64)
+                Circle().stroke(.white.opacity(0.9), lineWidth: 2).frame(width: 18, height: 18)
+                Path { p in
+                    p.move(to: CGPoint(x: 32 + x, y: 32 - y))
+                    p.addLine(to: CGPoint(x: 32, y: 32))
+                }
+                .stroke(Color.orange, style: StrokeStyle(lineWidth: 2, dash: [3, 3]))
+                .frame(width: 64, height: 64)
+                Circle().fill(Color.orange).frame(width: 12, height: 12).offset(x: x, y: -y)
+            }
+            Text("\(Int((offset.x * offset.x + offset.y * offset.y + offset.z * offset.z).squareRoot() * 100)) cm from spot")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(.ultraThinMaterial, in: Capsule())
+        }
+        .foregroundStyle(.white)
     }
 }

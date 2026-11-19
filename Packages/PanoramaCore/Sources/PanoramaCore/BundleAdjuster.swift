@@ -11,6 +11,10 @@ import Foundation
 public struct BundleAdjuster: Sendable {
     public var focal: Double
     public var priorSigma: Double = 3.0.radians
+    /// ARKit's gravity is accurate per frame; it keeps the horizon level (tilt only — the
+    /// heading around the vertical axis stays free).
+    public var gravitySigma: Double = 0.4.radians
+    private let up = Vec3(0, 1, 0)
     public var huberPixels: Double = 2.0
     public var iterations: Int = 30
 
@@ -47,6 +51,9 @@ public struct BundleAdjuster: Sendable {
             for k in 0..<n {
                 let p = (initial[k].transposed * R[k]).rotationVector.length / priorSigma
                 c += p * p
+                // Gravity: each photo's "up" should match the sensor's.
+                let gr = (R[k].transposed * up - initial[k].transposed * up) / gravitySigma
+                c += gr.dot(gr)
             }
             return (c, matches.isEmpty ? 0 : (sq / Double(matches.count)).squareRoot())
         }
@@ -80,6 +87,16 @@ public struct BundleAdjuster: Sendable {
                 for d in 0..<3 {
                     H[(3 * k + d) * dim + 3 * k + d] += ip
                     g[3 * k + d] += ip * r[d]
+                }
+                // Gravity prior: residual R^T up - R0^T up; d/dw (R exp(w))^T up = [R^T up]x
+                let ru = R[k].transposed * up
+                let e = (ru - initial[k].transposed * up) / gravitySigma
+                let J = Mat3.skew(ru) * (1 / gravitySigma)
+                for a in 0..<3 {
+                    for b in 0..<3 {
+                        H[(3 * k + a) * dim + 3 * k + b] += J[0, a] * J[0, b] + J[1, a] * J[1, b] + J[2, a] * J[2, b]
+                    }
+                    g[3 * k + a] += J[0, a] * e.x + J[1, a] * e.y + J[2, a] * e.z
                 }
             }
 

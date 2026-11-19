@@ -44,6 +44,9 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     var trackingMessage: String?
     /// True when the phone has moved away from where the first photos were taken.
     var driftWarning = false
+    /// Where the phone is relative to its spot, in screen terms (metres): x = right,
+    /// y = up, z = away from the user. nil while the phone is close enough.
+    var driftOffset: SIMD3<Double>?
 
     // MARK: Internals
     @ObservationIgnored let arView: ARView
@@ -75,8 +78,7 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     private let maxAngularSpeed = 12.0.radians   // per second
     private let holdDuration = 0.45               // seconds
     private let photoMaxLongSide = 2048
-    private let driftWarnDistance = 0.08
-    private let driftBlockDistance = 0.25
+    private let driftWarnDistance = 0.10
     private let maxFeaturePoints = 40_000
 
     override init() {
@@ -258,17 +260,32 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         let steady = speed < maxAngularSpeed
         // Parallax guard: the phone should turn around itself, not around the user.
         let position = Vec3(Double(camPos.x), Double(camPos.y), Double(camPos.z))
-        let drift = anchorPosition.map { (position - $0).length } ?? 0
-        driftWarning = drift > driftWarnDistance
-        let positionOK = drift < driftBlockDistance
-        isAligned = angleError < alignTolerance && rollOK && positionOK
+        // Drift is only advice now: depth-based parallax correction and content-aware seams
+        // cope with moderate movement, so photos are never blocked.
+        let driftVector = anchorPosition.map { position - $0 } ?? .zero
+        driftWarning = driftVector.length > driftWarnDistance
+        if driftWarning {
+            // Directions the user can follow even when pointing at the floor or ceiling:
+            // up/down = gravity, away/right = horizontal, relative to where the user faces.
+            var fwd = R * Vec3(0, 0, -1)
+            fwd.y = 0
+            if fwd.length < 0.3 {
+                // Looking straight up/down: the top of the phone points away from the user (down) or towards them.
+                fwd = R * Vec3(-1, 0, 0)
+                fwd.y = 0
+            }
+            fwd = fwd.normalized
+            let right = fwd.cross(Vec3(0, 1, 0)).normalized
+            driftOffset = SIMD3(driftVector.dot(right), driftVector.y, driftVector.dot(fwd))
+        } else {
+            driftOffset = nil
+        }
+        isAligned = angleError < alignTolerance && rollOK
 
         if isCapturingPhoto {
             hint = "Hold still…"
-        } else if !positionOK {
-            hint = "Move the phone back – turn around the phone, not yourself"
-        } else if driftWarning && angleError > alignTolerance {
-            hint = "Keep the phone in one spot and turn around it"
+        } else if let d = driftOffset, angleError > alignTolerance {
+            hint = Self.driftHint(d)
         } else if trackingMessage != nil {
             hint = trackingMessage!
         } else if angleError < alignTolerance * 2.5 && !rollOK {
@@ -292,6 +309,17 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             holdTime = max(0, holdTime - dt * 2)
             holdProgress = min(1, holdTime / holdDuration)
         }
+    }
+
+    /// "Move the phone 12 cm left and 6 cm closer" – the way back to the phone's spot.
+    static func driftHint(_ d: SIMD3<Double>) -> String {
+        var parts: [String] = []
+        func cm(_ v: Double) -> Int { Int((abs(v) * 100).rounded()) }
+        if abs(d.x) >= 0.04 { parts.append("\(cm(d.x)) cm \(d.x > 0 ? "left" : "right")") }
+        if abs(d.y) >= 0.04 { parts.append("\(cm(d.y)) cm \(d.y > 0 ? "down" : "up")") }
+        if abs(d.z) >= 0.04 { parts.append("\(cm(d.z)) cm \(d.z > 0 ? "closer to you" : "further away")") }
+        if parts.isEmpty { return "Keep the phone in one spot and turn around it" }
+        return "Move the phone " + parts.joined(separator: ", ") + " – then turn around it"
     }
 
     // MARK: Capture

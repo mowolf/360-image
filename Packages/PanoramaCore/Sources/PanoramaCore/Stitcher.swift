@@ -41,6 +41,8 @@ public struct StitchOptions: Sendable {
     public var compensateParallax = true
     /// Re-match all pairs from the refined poses and adjust again (more accurate, ~+30% time).
     public var secondAlignmentPass = true
+    /// Keep the horizon level using the sensor's gravity.
+    public var levelHorizon = true
     /// Estimate and remove lens vignetting (darker photo corners) from the overlaps.
     public var correctVignetting = true
     /// Rotate the result so the first photo is in the middle of the panorama.
@@ -74,6 +76,8 @@ public struct StitchReport: Sendable {
     public var residualDepth = 0.0
     public var depthModelUsed = false
     public var depthDroppedPhotos = 0
+    /// Tilt removed by the final levelling step (radians).
+    public var horizonCorrection = 0.0
     public var vignette = Vignette()
     public var rotations: [Mat3] = []
     public var gains: [[Float]] = []
@@ -287,6 +291,19 @@ public final class Stitcher: @unchecked Sendable {
             progress?(.optimizing, 1)
         }
         gray = []
+        // Level the horizon: remove any average tilt the optimization introduced relative to
+        // the sensor's gravity (the heading is free and handled by centring below).
+        if options.levelHorizon {
+            var upSum = Vec3.zero
+            for k in 0..<n { upSum += rotations[k] * (sources[k].rotation.orthonormalized.transposed * Vec3(0, 1, 0)) }
+            let g = upSum.normalized
+            let axis = g.cross(Vec3(0, 1, 0))
+            if axis.length > 1e-9 {
+                let T = Mat3.rotation(axis.normalized * g.angle(to: Vec3(0, 1, 0)))
+                rotations = rotations.map { (T * $0).orthonormalized }
+                report.horizonCorrection = g.angle(to: Vec3(0, 1, 0))
+            }
+        }
         report.parallaxCompensated = depths.contains { $0 != nil } && offsets.contains { $0.length > 1e-4 }
 
         if options.centerOnFirstPhoto {
