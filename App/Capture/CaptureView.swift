@@ -139,13 +139,6 @@ struct CaptureView: View {
                     .font(.subheadline.monospacedDigit().weight(.semibold))
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(.ultraThinMaterial, in: Capsule())
-                Button { withAnimation { onboardingSeen = false } } label: {
-                    Image(systemName: "info")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 32, height: 32)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .accessibilityLabel("How it works")
                 Spacer()
                 if !session.shots.isEmpty {
                     Button { confirmRestart = true } label: {
