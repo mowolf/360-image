@@ -284,3 +284,59 @@ final class NoLidarParallaxTests: XCTestCase {
         XCTAssertGreaterThan(full, none + 8)
     }
 }
+
+final class DepthRobustnessTests: XCTestCase {
+    /// Bad depth must never make alignment worse than the rotation-only model.
+    func testBadDepthNeverHurts() throws {
+        let scene = ParallaxScene()
+        let K = SyntheticRig.intrinsics()
+        let plan = CapturePlan(horizontalFOV: 2 * atan(Double(K.height) / 2 / K.fy),
+                               verticalFOV: 2 * atan(Double(K.width) / 2 / K.fx))
+        var rng = SplitMix(seed: 33)
+        var truth: [Mat3] = [], positions: [Vec3] = []
+        var distorted: [StitchSource] = [], garbage: [StitchSource] = [], plain: [StitchSource] = []
+        for t in plan.targets {
+            let R = SyntheticRig.portraitRotation(yaw: t.yaw + 1.5.radians * rng.normal(),
+                                                  pitch: t.pitch + 1.5.radians * rng.normal(),
+                                                  roll: 2.radians * rng.normal())
+            let pos = R * Vec3(0, 0, -0.12) + Vec3(rng.normal(), rng.normal(), rng.normal()) * 0.015
+            let (img, depth) = scene.render(K: K, R: R, position: pos)
+            truth.append(R); positions.append(pos)
+            // Network with a wrong far-field shape (compressed inverse depth) ...
+            let rel1 = RelativeDepth(width: depth.width, height: depth.height,
+                                     values: depth.data.map { Float(pow(1 / Double($0), 0.5)) })
+            // ... and one that outputs noise.
+            let rel2 = RelativeDepth(width: depth.width, height: depth.height,
+                                     values: depth.data.map { _ in Float(rng.uniform()) })
+            let noise = Vec3(rng.normal(), rng.normal(), rng.normal()) * 0.5.radians
+            let Rn = R * Mat3.rotation(noise)
+            plain.append(StitchSource(intrinsics: K, rotation: Rn, position: pos, load: { img }))
+            distorted.append(StitchSource(intrinsics: K, rotation: Rn, position: pos, relativeDepth: rel1, load: { img }))
+            garbage.append(StitchSource(intrinsics: K, rotation: Rn, position: pos, relativeDepth: rel2, load: { img }))
+        }
+        var cloud: [Vec3] = []
+        for _ in 0..<1500 {
+            let d = Vec3(rng.normal(), rng.normal(), rng.normal()).normalized
+            let o = Vec3(rng.normal(), rng.normal(), rng.normal()) * 0.05
+            cloud.append(o + d * scene.cast(o, d).1 * (1 + 0.02 * rng.normal()))
+        }
+        let center = positions.reduce(Vec3.zero, +) / Double(positions.count)
+        func run(_ sources: [StitchSource], points: [Vec3], parallax: Bool, name: String) throws -> Double {
+            var o = StitchOptions()
+            o.outputWidth = 2048
+            o.seamGridWidth = 1024
+            o.compensateParallax = parallax
+            let res = try Stitcher().stitch(sources, scenePoints: points, options: o)
+            let G = res.report.rotations[0] * truth[0].transposed
+            let psnr = TestImageIO.psnr(res.panorama, scene.equirect(width: 2048, center: center, gauge: G))
+            let r = res.report
+            print("\(name): PSNR \(String(format: "%.2f", psnr)) dB, residual rot-only \(String(format: "%.2f", r.residualRotationOnly)) px, depth \(String(format: "%.2f", r.residualDepth)) px, depth used \(r.depthModelUsed), dropped \(r.depthDroppedPhotos)")
+            return psnr
+        }
+        let rotOnly = try run(plain, points: [], parallax: false, name: "rotation-only")
+        let dist = try run(distorted, points: cloud, parallax: true, name: "distorted-mono")
+        let garb = try run(garbage, points: [], parallax: true, name: "garbage-mono")
+        XCTAssertGreaterThan(dist, rotOnly - 0.3)
+        XCTAssertGreaterThan(garb, rotOnly - 0.3)
+    }
+}

@@ -58,7 +58,30 @@ final class PanoramaLibrary {
     func delete(_ item: PanoramaItem) {
         try? FileManager.default.removeItem(at: item.url)
         try? FileManager.default.removeItem(at: item.thumbnailURL)
+        if let folder = captureFolder(for: item) {
+            try? FileManager.default.removeItem(at: linkURL(item))
+            // Remove the raw capture once no panorama refers to it any more.
+            let stillUsed = items.contains { $0.id != item.id && captureFolder(for: $0) == folder }
+            if !stillUsed { CaptureStore.delete(folder: folder) }
+        }
         reload()
+    }
+
+    // MARK: Raw captures
+
+    private func linkURL(_ item: PanoramaItem) -> URL {
+        directory.appendingPathComponent("\(item.id).capture")
+    }
+
+    func link(_ item: PanoramaItem, captureFolder: String) {
+        try? captureFolder.write(to: linkURL(item), atomically: true, encoding: .utf8)
+    }
+
+    /// Folder in the CaptureStore holding this panorama's raw photos, if kept.
+    func captureFolder(for item: PanoramaItem) -> String? {
+        guard let s = try? String(contentsOf: linkURL(item), encoding: .utf8) else { return nil }
+        let name = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return FileManager.default.fileExists(atPath: CaptureStore.root.appendingPathComponent(name).path) ? name : nil
     }
 
     /// Saves the original JPEG (with its Photo-Sphere metadata intact) to the Photos library.

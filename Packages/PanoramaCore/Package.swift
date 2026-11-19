@@ -9,6 +9,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "PanoramaCore"),
+        .executableTarget(name: "pano-replay", dependencies: ["PanoramaCore"]),
         .testTarget(name: "PanoramaCoreTests", dependencies: ["PanoramaCore"]),
     ]
 )

@@ -76,8 +76,17 @@ change that matters on a phone: **the sensors already give each photo's orientat
    - **Depth Anything V2** (Apple's Core ML build, on the Neural Engine): dense
      relative depth, fitted per photo to the metric points via a robust 1/z = s·d + t.
 
+   Depth has to prove itself. Bundle adjustment runs both rotation-only and with
+   parallax correction, each photo's depth gets an inverse-depth scale and offset
+   (1/z' = α/z + β) calibrated against its matches, photos whose matches get worse with
+   depth fall back to rotation-only, and the depth model is used only if it lowers the
+   overall alignment residual. A test feeding pure-noise depth confirms it never does
+   worse than rotation-only.
+
    The capture UI also warns when the phone drifts more than 8 cm and blocks capture
    beyond 25 cm.
+5b. **Second alignment pass.** All pairs are matched again from the refined poses, where
+   overlaps start nearly aligned, and the final bundle adjustment uses both match sets.
 6. **Graph-cut seams** (Kwatra et al. 2003, Agarwala et al. 2004). Each panorama pixel
    is labelled with its source photo by minimizing data + seam costs with α-expansion
    (Boykov–Kolmogorov max-flow) on a 1536×768 grid. A seam between photos *a* and *b*
@@ -131,6 +140,18 @@ through one frame is rejected.
 
 Possible future improvements: optical-flow deghosting, a lens-distortion term in bundle
 adjustment, and Metal acceleration.
+
+## Debugging alignment on real captures
+
+Every capture's raw data (merged photos, ARKit poses, LiDAR / monocular depth, ARKit
+feature points, and a `report-*.json` with alignment residuals) is kept on the phone. In
+the viewer, the **⋯** menu offers **Re-stitch with this version**, which runs a newer
+stitcher on an old capture, and **Export capture data**, which makes a zip. Replay an
+exported zip on a desktop with:
+
+```sh
+scripts/replay-capture.sh pano-capture-XYZ.zip --width 4096   # [--no-depth] [--no-seams]
+```
 
 ## Building locally
 

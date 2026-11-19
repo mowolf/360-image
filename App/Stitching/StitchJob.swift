@@ -22,9 +22,12 @@ final class StitchJob: Identifiable {
     @ObservationIgnored private var cancelled = false
 
     @ObservationIgnored private let capture: CaptureResult
+    /// Set when re-stitching a capture that is already in the CaptureStore.
+    @ObservationIgnored private let existingCaptureFolder: String?
 
-    init(capture: CaptureResult, library: PanoramaLibrary) {
+    init(capture: CaptureResult, library: PanoramaLibrary, existingCaptureFolder: String? = nil) {
         self.capture = capture
+        self.existingCaptureFolder = existingCaptureFolder
         self.shots = capture.shots
         self.sessionDirectory = capture.sessionDirectory
         self.library = library
@@ -43,6 +46,7 @@ final class StitchJob: Identifiable {
         guard task == nil else { return }
         let shots = self.shots
         let capture = self.capture
+        let existingFolder = existingCaptureFolder
         var options = StitchOptions()
         options.outputWidth = Self.outputWidth
         stitcher.isCancelled = { [weak self] in self?.cancelled ?? true }
@@ -69,13 +73,19 @@ final class StitchJob: Identifiable {
                 }
                 guard let cg = ImageSupport.cgImage(from: res.panorama) else { throw CocoaError(.fileWriteUnknown) }
                 let item = try await library.save(panorama: cg, sourceCount: shots.count)
-                try? FileManager.default.removeItem(at: sessionDirectory)
+                // Keep the raw capture for re-stitching / export.
+                if let folder = existingFolder ?? (try? CaptureStore.persist(capture)) {
+                    library.link(item, captureFolder: folder)
+                    CaptureStore.writeReport(res.report, folder: folder, panorama: item.id)
+                } else {
+                    try? FileManager.default.removeItem(at: sessionDirectory)
+                }
                 await MainActor.run {
                     self?.report = res.report
                     self?.result = item
                 }
             } catch StitchError.cancelled {
-                try? FileManager.default.removeItem(at: sessionDirectory)
+                if existingFolder == nil { try? FileManager.default.removeItem(at: sessionDirectory) }
             } catch {
                 await MainActor.run { self?.errorMessage = error.localizedDescription }
             }

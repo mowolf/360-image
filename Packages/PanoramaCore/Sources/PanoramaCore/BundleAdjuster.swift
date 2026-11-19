@@ -127,4 +127,25 @@ public struct BundleAdjuster: Sendable {
             }
         }
     }
+
+    /// Alignment residual (pixels) of every match for the given model.
+    public func residuals(rotations R: [Mat3], matches: [RayMatch], offsets: [Vec3]) -> [Double] {
+        func dir(_ R: Mat3, _ ray: Vec3, _ point: Vec3?, _ off: Vec3) -> Vec3 {
+            guard let point, off.length > 1e-6 else { return R * ray }
+            return (R * point + off).normalized
+        }
+        return matches.map { m in
+            (dir(R[m.i], m.rayI, m.pointI, offsets[m.i]) - dir(R[m.j], m.rayJ, m.pointJ, offsets[m.j])).length * focal
+        }
+    }
+}
+
+extension Array where Element == Double {
+    /// Mean of the lower 90% (ignores gross outliers such as moving objects).
+    public var robustMean: Double {
+        if isEmpty { return 0 }
+        let s = sorted()
+        let k = Swift.max(1, Int(Double(s.count) * 0.9))
+        return s[0..<k].reduce(0, +) / Double(k)
+    }
 }

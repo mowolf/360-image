@@ -39,6 +39,8 @@ public struct StitchOptions: Sendable {
     public var seamGridWidth = 1536
     /// Use camera positions + depth maps (when present) to compensate parallax.
     public var compensateParallax = true
+    /// Re-match all pairs from the refined poses and adjust again (more accurate, ~+30% time).
+    public var secondAlignmentPass = true
     /// Estimate and remove lens vignetting (darker photo corners) from the overlaps.
     public var correctVignetting = true
     /// Rotate the result so the first photo is in the middle of the panorama.
@@ -53,6 +55,7 @@ public enum StitchStage: String, Sendable {
     case exposure = "Balancing exposure"
     case seams = "Finding seams"
     case depth = "Estimating depth"
+    case refining = "Refining alignment"
     case blending = "Blending"
     case finishing = "Finishing"
 }
@@ -66,6 +69,11 @@ public struct StitchReport: Sendable {
     public var coverage = 0.0
     public var parallaxCompensated = false
     public var depthSources = 0
+    /// Robust mean alignment residual (pixels at alignment resolution) per model.
+    public var residualRotationOnly = 0.0
+    public var residualDepth = 0.0
+    public var depthModelUsed = false
+    public var depthDroppedPhotos = 0
     public var vignette = Vignette()
     public var rotations: [Mat3] = []
     public var gains: [[Float]] = []
@@ -171,33 +179,110 @@ public final class Stitcher: @unchecked Sendable {
             }
             func bundleAdjust(start: [Mat3]) {
                 guard !matches.isEmpty else { return }
-                let res = BundleAdjuster(focal: focal).optimize(initial: sensorRotations, matches: matches,
-                                                                 offsets: offsets, start: start)
-                rotations = res.rotations
-                if report.rmsBefore == 0 { report.rmsBefore = res.initialRMS }
-                report.rmsAfter = res.finalRMS
+                rotations = BundleAdjuster(focal: focal).optimize(initial: sensorRotations, matches: matches,
+                                                                   offsets: offsets, start: start).rotations
             }
 
-            // 3. Global bundle adjustment, interleaved with metric depth estimation:
-            //    pass 1 uses LiDAR / ARKit feature points / monocular depth, pass 2 adds points
-            //    triangulated from the matches with the refined rotations (the phone's movement
-            //    between shots is the stereo baseline).
+            // 3. Global bundle adjustment.
+            //    a) Rotation-only: the classic model and the safe fallback.
+            //    b) Parallax-aware: metric depth per photo (LiDAR / ARKit points / monocular
+            //       depth, then points triangulated with refined rotations), each photo's depth
+            //       calibrated against the matches, and BA on directions from the panorama centre.
+            //    The depth model is kept only where it measurably reduces misalignment.
             progress?(.optimizing, 0)
-            if hasPositions && offsets.contains(where: { $0.length > 0.005 }) {
+            let ba = BundleAdjuster(focal: focal)
+            let rotOnly = matches.isEmpty ? sensorRotations
+                : ba.optimize(initial: sensorRotations, matches: matches, offsets: nil, start: sensorRotations).rotations
+            rotations = rotOnly
+            let zeroOffsets = [Vec3](repeating: .zero, count: n)
+            let rotOnlyResiduals = ba.residuals(rotations: rotOnly, matches: matches, offsets: zeroOffsets)
+            report.rmsBefore = ba.residuals(rotations: sensorRotations, matches: matches, offsets: zeroOffsets).robustMean
+            report.residualRotationOnly = rotOnlyResiduals.robustMean
+            report.rmsAfter = report.residualRotationOnly
+            var useDepth = false
+
+            if hasPositions && offsets.contains(where: { $0.length > 0.005 }) && !matches.isEmpty {
                 progress?(.depth, 0)
                 depths = estimateDepths(sources: sources, cloudRotations: sensorRotations, rotations: rotations,
                                         offsets: offsets, center: panoCenter, scenePoints: scenePoints, matches: [])
                 attachPoints()
-                bundleAdjust(start: sensorRotations)
-                progress?(.depth, 0.5)
+                bundleAdjust(start: rotOnly)
+                progress?(.depth, 0.3)
                 depths = estimateDepths(sources: sources, cloudRotations: sensorRotations, rotations: rotations,
                                         offsets: offsets, center: panoCenter, scenePoints: scenePoints, matches: matches)
                 attachPoints()
                 bundleAdjust(start: rotations)
+                progress?(.depth, 0.6)
+                for _ in 0..<2 {
+                    depths = calibrateDepths(depths, rotations: rotations, offsets: offsets, matches: matches, focal: focal)
+                    attachPoints()
+                    bundleAdjust(start: rotations)
+                }
+                // Per-photo validation: drop depth where it makes that photo's matches worse.
+                let depthResiduals = ba.residuals(rotations: rotations, matches: matches, offsets: offsets)
+                var dropped = 0
+                for k in 0..<n where depths[k] != nil {
+                    let idx = matches.indices.filter { matches[$0].i == k || matches[$0].j == k }
+                    if idx.count < 8 { continue }
+                    let withDepth = idx.map { depthResiduals[$0] }.robustMean
+                    let without = idx.map { rotOnlyResiduals[$0] }.robustMean
+                    if withDepth > without * 1.1 { depths[k] = nil; dropped += 1 }
+                }
+                if dropped > 0 {
+                    attachPoints()
+                    bundleAdjust(start: rotations)
+                }
+                let depthCost = ba.residuals(rotations: rotations, matches: matches, offsets: offsets).robustMean
+                report.residualDepth = depthCost
+                report.depthDroppedPhotos = dropped
+                // Global decision: depth must beat the rotation-only model.
+                if depthCost < report.residualRotationOnly * 0.97 {
+                    useDepth = true
+                    report.rmsAfter = depthCost
+                } else {
+                    rotations = rotOnly
+                }
                 report.depthSources = depths.filter { $0 != nil }.count
                 progress?(.depth, 1)
-            } else {
-                bundleAdjust(start: sensorRotations)
+            }
+            if !useDepth {
+                depths = [DepthMap?](repeating: nil, count: n)
+            }
+            report.depthModelUsed = useDepth
+
+            // 4. Second alignment pass from the refined poses: overlaps now start nearly
+            //    aligned (and parallax-corrected), so matching finds more, more accurate
+            //    correspondences. Then a final bundle adjustment with the chosen model.
+            if options.secondAlignmentPass && !matches.isEmpty {
+                progress?(.refining, 0)
+                var aligner2 = PairwiseAligner()
+                aligner2.config.maxSensorErrorDegrees = 3
+                let cams2 = (0..<n).map { camera($0, grayK[$0], rotations[$0]) }
+                let pairs2 = aligner2.alignAll(gray: gray, cameras: cams2) { progress?(.refining, $0 * 0.9) }
+                if isCancelled() { throw StitchError.cancelled }
+                // The new rays were measured against the refined rotations; express them in
+                // the sensor-relative form the adjuster expects (rays are camera-frame already).
+                var matches2 = pairs2.flatMap { $0.matches }
+                if !useDepth {
+                    for m in 0..<matches2.count { matches2[m].pointI = nil; matches2[m].pointJ = nil }
+                }
+                // Both match sets are independent measurements of the same geometry: use both.
+                if !useDepth {
+                    for m in 0..<matches.count { matches[m].pointI = nil; matches[m].pointJ = nil }
+                }
+                matches2 += matches
+                do {
+                    let offs: [Vec3]? = useDepth ? offsets : nil
+                    let before = ba.residuals(rotations: rotations, matches: matches2, offsets: offs ?? zeroOffsets).robustMean
+                    let refined = ba.optimize(initial: sensorRotations, matches: matches2, offsets: offs, start: rotations).rotations
+                    let after = ba.residuals(rotations: refined, matches: matches2, offsets: offs ?? zeroOffsets).robustMean
+                    if after <= before {
+                        rotations = refined
+                        report.rmsAfter = after
+                        report.matches = matches2.count
+                    }
+                }
+                progress?(.refining, 1)
             }
             progress?(.optimizing, 1)
         }
@@ -307,6 +392,58 @@ public final class Stitcher: @unchecked Sendable {
                                          relative: sources[k].relativeDepth, samples: samples[k])
             return fused ?? sources[k].depth
         }
+    }
+
+    /// Per-photo correction of the depth map in inverse depth, 1/z' = α/z + β, chosen to
+    /// minimize that photo's match residuals (other photos fixed). This absorbs scale/offset
+    /// errors of monocular depth, especially in the far field where they matter most.
+    func calibrateDepths(_ depths: [DepthMap?], rotations: [Mat3], offsets: [Vec3], matches: [RayMatch],
+                         focal: Double) -> [DepthMap?] {
+        let n = depths.count
+        var out = depths
+        let alphas: [Double] = [0.5, 0.65, 0.8, 0.9, 1.0, 1.1, 1.25, 1.45, 1.7]
+        let betas: [Double] = [-0.08, -0.05, -0.03, -0.015, 0, 0.015, 0.03, 0.05, 0.08, 0.12]
+        func dir(_ R: Mat3, _ ray: Vec3, _ point: Vec3?, _ off: Vec3) -> Vec3 {
+            guard let point else { return R * ray }
+            return (R * point + off).normalized
+        }
+        for k in 0..<n {
+            guard let depth = depths[k] else { continue }
+            // (own point, other direction) per match involving k.
+            var obs: [(Vec3, Vec3)] = []
+            for m in matches {
+                if m.i == k, let p = m.pointI {
+                    obs.append((p, dir(rotations[m.j], m.rayJ, m.pointJ, offsets[m.j])))
+                } else if m.j == k, let p = m.pointJ {
+                    obs.append((p, dir(rotations[m.i], m.rayI, m.pointI, offsets[m.i])))
+                }
+            }
+            if obs.count < 12 { continue }
+            var best = (1.0, 0.0), bestCost = Double.infinity
+            for a in alphas {
+                for b in betas {
+                    var cost = 0.0
+                    for (p, other) in obs {
+                        let z = -p.z
+                        let inv = a / max(z, 0.05) + b
+                        let z2 = inv > 1 / Double(DepthMap.far) ? 1 / inv : Double(DepthMap.far)
+                        let p2 = p * (z2 / max(z, 1e-6))
+                        let e = ((rotations[k] * p2 + offsets[k]).normalized - other).length * focal
+                        cost += e <= 2 ? e * e : 4 * e - 4
+                    }
+                    // Mild preference for no correction.
+                    cost += Double(obs.count) * 0.3 * (pow((a - 1) / 0.5, 2) + pow(b / 0.08, 2))
+                    if cost < bestCost { bestCost = cost; best = (a, b) }
+                }
+            }
+            if best == (1.0, 0.0) { continue }
+            let corrected = depth.data.map { z -> Float in
+                let inv = best.0 / max(Double(z), 0.05) + best.1
+                return Float(inv > 1 / Double(DepthMap.far) ? 1 / inv : Double(DepthMap.far))
+            }
+            out[k] = DepthMap(width: depth.width, height: depth.height, depth: corrected)
+        }
+        return out
     }
 
     /// Intrinsics after a pyramid REDUCE (pixel m of the new image is centred on pixel 2m).

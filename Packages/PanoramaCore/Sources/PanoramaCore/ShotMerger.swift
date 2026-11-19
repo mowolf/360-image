@@ -39,13 +39,15 @@ public enum ShotMerger {
 
     /// - Parameter reference: index of the frame defining the output geometry (normally the
     ///   metered EV0 frame). Returns an image with the reference frame's size and intrinsics.
-    public static func merge(_ frames: [BurstFrame], reference: Int = 0) -> (FloatImage, Report) {
+    public static func merge(_ frames: [BurstFrame], reference: Int = 0,
+                             allowReferenceSwitch: Bool = false) -> (FloatImage, Report) {
         var report = Report()
         guard frames.count > 1 else { return (frames.first?.image ?? FloatImage(width: 1, height: 1, channels: 3), report) }
         var r = reference
-        // If another frame at the same exposure is clearly sharper, it becomes the reference.
+        // Optionally let a clearly sharper same-exposure frame define the geometry. Callers that
+        // enable this must use `report.reference`'s pose and intrinsics for the result.
         let sameExposure = frames.indices.filter { abs(log(frames[$0].exposure / frames[r].exposure)) < 0.1 }
-        if sameExposure.count > 1 {
+        if allowReferenceSwitch && sameExposure.count > 1 {
             let s = jointSharpness(sameExposure.map { frames[$0].image }, exposures: sameExposure.map { frames[$0].exposure })
             if let best = s.indices.max(by: { s[$0] < s[$1] }), s[best] > 1.25 * s[sameExposure.firstIndex(of: r)!] {
                 r = sameExposure[best]
