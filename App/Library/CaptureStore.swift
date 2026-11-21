@@ -128,6 +128,36 @@ enum CaptureStore {
         return try result.get()
     }
 
+    /// Total size of all stored captures (bytes).
+    static func totalSize() -> Int64 {
+        let fm = FileManager.default
+        guard let e = fm.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in e {
+            total += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return total
+    }
+
+    static func deleteAll() {
+        let fm = FileManager.default
+        for url in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] {
+            try? fm.removeItem(at: url)
+        }
+    }
+
+    /// Removes leftovers from interrupted sessions: temporary capture folders and exported zips.
+    static func cleanUpTemporaryFiles() {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        for url in (try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil)) ?? [] {
+            let name = url.lastPathComponent
+            if name.hasPrefix("capture-") || name.hasPrefix("pano-capture-") {
+                try? fm.removeItem(at: url)
+            }
+        }
+    }
+
     static func delete(folder: String) {
         try? FileManager.default.removeItem(at: root.appendingPathComponent(folder, isDirectory: true))
     }

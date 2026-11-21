@@ -144,7 +144,7 @@ adjustment, and Metal acceleration.
 
 ## Debugging alignment on real captures
 
-Every capture's raw data (merged photos, ARKit poses, LiDAR / monocular depth, ARKit
+With **Settings → Keep capture data** enabled (off by default), each capture's raw data (merged photos, ARKit poses, LiDAR / monocular depth, ARKit
 feature points, and a `report-*.json` with alignment residuals) is kept on the phone. In
 the viewer, the **⋯** menu offers **Re-stitch with this version**, which runs a newer
 stitcher on an old capture, and **Export capture data**, which makes a zip. Replay an

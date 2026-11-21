@@ -81,8 +81,9 @@ final class StitchJob: Identifiable {
                 if UserDefaults.standard.bool(forKey: Settings.autoSaveToPhotos) {
                     try? await PhotoSaver.save(item)
                 }
-                // Keep the raw capture for re-stitching / export.
-                if let folder = existingFolder ?? (try? CaptureStore.persist(capture)) {
+                // Keep the raw capture for re-stitching / export only if enabled in Settings.
+                let keep = existingFolder != nil || UserDefaults.standard.bool(forKey: Settings.keepCaptureData)
+                if keep, let folder = existingFolder ?? (try? CaptureStore.persist(capture)) {
                     library.link(item, captureFolder: folder)
                     CaptureStore.writeReport(res.report, folder: folder, panorama: item.id)
                 } else {
