@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage(Settings.onboardingSeen) private var onboardingSeen = true
     @AppStorage(Settings.keepCaptureData) private var keepCaptures = false
     @State private var storedBytes: Int64 = CaptureStore.totalSize()
+    @State private var confirmDelete = false
     @Environment(PanoramaLibrary.self) private var library
     @Environment(\.dismiss) private var dismiss
 
@@ -21,22 +22,32 @@ struct SettingsView: View {
             Form {
                 Section {
                     Toggle("Save to Photos automatically", isOn: $autoSave)
+                        .tint(.green)
                 } footer: {
                     Text("New panoramas are added to the \u{201C}\(PhotoSaver.albumName)\u{201D} album with their 360° metadata.")
                 }
                 Section {
                     Toggle("HDR capture", isOn: $hdr)
+                        .tint(.green)
                 } footer: {
                     Text("Takes an extra darker frame at every dot so bright lamps and windows keep their detail. Turn off for slightly faster capture.")
                 }
                 Section {
                     Toggle("Keep capture data", isOn: $keepCaptures)
+                        .tint(.green)
                     if storedBytes > 0 {
                         Button("Delete stored capture data (\(ByteCountFormatter.string(fromByteCount: storedBytes, countStyle: .file)))",
                                role: .destructive) {
-                            CaptureStore.deleteAll()
-                            library.reload()
-                            storedBytes = CaptureStore.totalSize()
+                            confirmDelete = true
+                        }
+                        .confirmationDialog("Delete stored capture data?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                            Button("Delete capture data", role: .destructive) {
+                                CaptureStore.deleteAll()
+                                library.reload()
+                                storedBytes = CaptureStore.totalSize()
+                            }
+                        } message: {
+                            Text("Your panoramas are kept, but they can no longer be re-stitched or exported.")
                         }
                     }
                 } footer: {
