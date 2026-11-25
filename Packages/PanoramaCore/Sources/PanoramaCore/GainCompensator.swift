@@ -178,7 +178,10 @@ public struct Vignette: Sendable, Equatable {
         guard let x = LinearSolver.solveSPD(A, rhs, n: dim) else { return Vignette() }
         var v = Vignette(a: x[0], b: x[1])
         // Only accept physically plausible falloff (darker towards the corners).
-        if v.factor(r2: 1) > 1.02 || v.factor(r2: 1) < 0.4 { v = Vignette() }
+        // iPhones already correct most lens shading in the ISP; a strong estimate usually
+        // means the scene fooled the fit (bright sky, local tone mapping), so only mild
+        // corrections are trusted.
+        if v.factor(r2: 1) > 1.02 || v.factor(r2: 1) < 0.65 { v = Vignette() }
         return v
     }
 }

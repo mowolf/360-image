@@ -196,7 +196,7 @@ final class VignettingTests: XCTestCase {
     func testVignettingIsEstimatedAndRemoved() throws {
         let scene = SyntheticScene()
         let K = SyntheticRig.intrinsics()
-        let truthV = Vignette(a: -0.45, b: -0.1)
+        let truthV = Vignette(a: -0.3, b: -0.05)
         let plan = CapturePlan(horizontalFOV: 2 * atan(Double(K.height) / 2 / K.fy),
                                verticalFOV: 2 * atan(Double(K.width) / 2 / K.fx))
         var rng = SplitMix(seed: 3)

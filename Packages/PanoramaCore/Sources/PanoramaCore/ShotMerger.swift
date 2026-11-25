@@ -21,14 +21,14 @@ public struct BurstFrame: Sendable {
 /// 1. **Alignment.** Each frame is warped onto the reference with the rotation-only
 ///    homography from ARKit's poses, then a residual shift is found by coarse-to-fine NCC
 ///    on exposure-normalized luminance (hand tremor, rolling shutter).
-/// 2. **Exposure fusion** (Mertens, Kautz & Van Reeth 2007). Per-pixel weights from
-///    contrast, saturation and well-exposedness are blended with Laplacian pyramids. The
-///    darker frames keep lamps and windows from blowing out, the brighter ones lift
-///    shadows, and same-exposure frames average out noise. No HDR radiance map or
-///    tone-mapping operator is needed, and the result looks natural.
-/// 3. **Deghosting.** Pixels whose exposure-normalized radiance disagrees with the reference
-///    (people moving, etc.) are suppressed. Frames noticeably blurrier than the sharpest
-///    one (motion blur) are down-weighted.
+/// 2. **Radiance merge** (Debevec & Malik style, with measured exposure ratios). All
+///    frames are linearized and divided by their exposure, so they estimate the same scene
+///    radiance. They are averaged with weights that avoid clipped and noisy values; ghosts
+///    (anything that moved) and motion-blurred frames are suppressed.
+/// 3. **Global highlight curve.** One fixed tone curve (identity in mid-tones, a soft
+///    shoulder for highlights up to +4 EV) is applied to every photo. Exposure is locked
+///    during capture, so overlapping photos map the same sky to the same values: no local
+///    tone mapping that differs from shot to shot and shows up as blocks in the panorama.
 public enum ShotMerger {
     public struct Report: Sendable {
         public var shifts: [(Double, Double)] = []
@@ -106,80 +106,70 @@ public enum ShotMerger {
         }
         report.exposures = exposures
 
-        // 3. Mertens weights with deghosting.
-        var weights: [FloatImage] = []
-        for (k, img) in aligned.enumerated() {
-            var w = mertensWeights(img)
-            // Only clearly blurred frames (motion blur cuts this energy several-fold) are penalized.
-            let ratio0 = sharp[k] / medianSharp
-            let blurFactor = Float(ratio0 < 0.35 ? pow(ratio0 / 0.35, 2) : 1)
-            let ratio = Float(ref.exposure / exposures[k])
-            let lin = linearize(img)
-            w.data.withUnsafeMutableBufferPointer { wd in
-                for i in 0..<(W * H) {
-                    if !valid[k][i] { wd[i] = 0; continue }
-                    var f = blurFactor
-                    if k != r {
-                        // Ghost test on channels that are well exposed in both frames.
-                        var diff: Float = 0, cnt: Float = 0
-                        for c in 0..<3 {
-                            let a = img.data[i * 3 + c], b = ref.image.data[i * 3 + c]
-                            if a > 0.03 && a < 0.95 && b > 0.03 && b < 0.95 {
-                                let la = lin.data[i * 3 + c] * ratio, lb = refLin.data[i * 3 + c]
-                                diff += abs(log(max(la, 1e-4)) - log(max(lb, 1e-4)))
-                                cnt += 1
-                            }
-                        }
-                        if cnt > 0 && diff / cnt > 0.3 { f *= 0.02 }
-                    }
-                    wd[i] *= f
-                }
-            }
-            weights.append(w)
+        // 3. Radiance merge. Every frame is converted to linear light and divided by its
+        //    measured exposure, so all frames estimate the same scene radiance; they are
+        //    averaged with weights that avoid clipped and noisy values. Ghosts (anything that
+        //    moved) are rejected against the reference, blurred frames are down-weighted.
+        let lins = aligned.map { linearize($0) }
+        let ratios = exposures.map { Float($0 / ref.exposure) }
+        let blurFactors: [Float] = (0..<frames.count).map { k in
+            let r0 = sharp[k] / medianSharp
+            return Float(r0 < 0.35 ? pow(r0 / 0.35, 2) : 1)
         }
-        // Normalize weights.
-        for i in 0..<(W * H) {
-            var sum: Float = 0
-            for k in 0..<weights.count { sum += weights[k].data[i] }
-            if sum < 1e-12 {
-                // Nothing usable (e.g. clipped everywhere): fall back to the reference.
-                for k in 0..<weights.count { weights[k].data[i] = k == r ? 1 : 0 }
-            } else {
-                for k in 0..<weights.count { weights[k].data[i] /= sum }
+        let darkest = ratios.indices.min { ratios[$0] < ratios[$1] } ?? r
+        var radiance = FloatImage(width: W, height: H, channels: 3)
+        radiance.data.withUnsafeMutableBufferPointer { out in
+            DispatchQueue.concurrentPerform(iterations: H) { y in
+                for x in 0..<W {
+                    let i = y * W + x
+                    let refMax = max(aligned[r].data[i * 3], aligned[r].data[i * 3 + 1], aligned[r].data[i * 3 + 2])
+                    let refClipped = refMax > 0.96
+                    var acc: (Float, Float, Float) = (0, 0, 0)
+                    var wsum: Float = 0
+                    for k in 0..<frames.count where valid[k][i] {
+                        let img = aligned[k].data
+                        let vmax = max(img[i * 3], img[i * 3 + 1], img[i * 3 + 2])
+                        // Hat weight: trust mid-tones, fade out towards clipping and black.
+                        var w: Float = vmax > 0.96 ? 0 : (vmax > 0.85 ? (0.96 - vmax) / 0.11 : 1)
+                        if vmax < 0.04 { w *= max(0.05, vmax / 0.04) }
+                        w *= sqrtf(ratios[k]) * blurFactors[k] // longer exposures are less noisy
+                        if w <= 0 { continue }
+                        let inv = 1 / ratios[k]
+                        let l0 = lins[k].data[i * 3] * inv, l1 = lins[k].data[i * 3 + 1] * inv, l2 = lins[k].data[i * 3 + 2] * inv
+                        if k != r && !refClipped && refMax > 0.04 {
+                            let ly = 0.2126 * l0 + 0.7152 * l1 + 0.0722 * l2
+                            let ry = 0.2126 * lins[r].data[i * 3] + 0.7152 * lins[r].data[i * 3 + 1] + 0.0722 * lins[r].data[i * 3 + 2]
+                            if abs(logf(max(ly, 1e-4)) - logf(max(ry, 1e-4))) > 0.35 { w *= 0.02 }
+                        }
+                        acc.0 += w * l0; acc.1 += w * l1; acc.2 += w * l2
+                        wsum += w
+                    }
+                    if wsum < 1e-6 {
+                        // Clipped in every frame (e.g. the sun): use the darkest frame as is.
+                        let k = valid[darkest][i] ? darkest : r
+                        let inv = 1 / ratios[k]
+                        out[i * 3] = lins[k].data[i * 3] * inv
+                        out[i * 3 + 1] = lins[k].data[i * 3 + 1] * inv
+                        out[i * 3 + 2] = lins[k].data[i * 3 + 2] * inv
+                    } else {
+                        out[i * 3] = acc.0 / wsum; out[i * 3 + 1] = acc.1 / wsum; out[i * 3 + 2] = acc.2 / wsum
+                    }
+                }
             }
         }
 
-        // 4. Laplacian pyramid blend.
-        let levels = max(1, Int(log2(Double(min(W, H)))) - 3)
-        var acc: [FloatImage]?
-        for k in 0..<aligned.count {
-            let lap = Pyramid.laplacian(aligned[k], levels: levels)
-            let gw = Pyramid.gaussian(weights[k], levels: levels)
-            if acc == nil {
-                acc = lap.map { FloatImage(width: $0.width, height: $0.height, channels: 3) }
-            }
-            for l in 0...levels {
-                let n = lap[l].width * lap[l].height
-                acc![l].data.withUnsafeMutableBufferPointer { a in
-                    lap[l].data.withUnsafeBufferPointer { b in
-                        gw[l].data.withUnsafeBufferPointer { w in
-                            for i in 0..<n {
-                                let wi = w[i]
-                                a[i * 3] += wi * b[i * 3]
-                                a[i * 3 + 1] += wi * b[i * 3 + 1]
-                                a[i * 3 + 2] += wi * b[i * 3 + 2]
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        var out = Pyramid.collapse(acc!)
-        for i in 0..<out.data.count { out.data[i] = max(0, min(1, out.data[i])) }
+        // 4. The same global highlight curve for every photo of the panorama (exposure is
+        //    locked during capture), so overlapping photos stay consistent for blending.
+        let out = HighlightCurve.standard.apply(radiance)
         return (out, report)
     }
 
     // MARK: - Helpers
+
+    @inline(__always) public static func linearToSRGB(_ v: Float) -> Float {
+        let x = max(0, min(1, v))
+        return x <= 0.0031308 ? 12.92 * x : 1.055 * powf(x, 1 / 2.4) - 0.055
+    }
 
     @inline(__always) static func srgbToLinear(_ v: Float) -> Float {
         v <= 0.04045 ? v / 12.92 : powf((v + 0.055) / 1.055, 2.4)
@@ -202,28 +192,6 @@ public enum ShotMerger {
             out.data[i] = powf(max(l * inv, 0), 1 / 2.2)
         }
         return out
-    }
-
-    static func mertensWeights(_ img: FloatImage) -> FloatImage {
-        let W = img.width, H = img.height
-        var w = FloatImage(width: W, height: H, channels: 1)
-        let gray = img.luminance()
-        for y in 0..<H {
-            for x in 0..<W {
-                let i = y * W + x
-                let xm = max(0, x - 1), xp = min(W - 1, x + 1), ym = max(0, y - 1), yp = min(H - 1, y + 1)
-                let lap = abs(gray.data[y * W + xm] + gray.data[y * W + xp] + gray.data[ym * W + x]
-                              + gray.data[yp * W + x] - 4 * gray.data[i])
-                let r = img.data[i * 3], g = img.data[i * 3 + 1], b = img.data[i * 3 + 2]
-                let mu = (r + g + b) / 3
-                let sat = ((r - mu) * (r - mu) + (g - mu) * (g - mu) + (b - mu) * (b - mu)) / 3
-                let e = expf(-((r - 0.5) * (r - 0.5) + (g - 0.5) * (g - 0.5) + (b - 0.5) * (b - 0.5)) / (2 * 0.2 * 0.2))
-                // Contrast and saturation are softened (+ε) so flat regions still get weight
-                // from well-exposedness, as in common Mertens implementations.
-                w.data[i] = (lap + 0.01) * (sat.squareRoot() + 0.05) * e + 1e-8
-            }
-        }
-        return w
     }
 
     /// Blur score per frame: gradient energy at full resolution divided by gradient energy
@@ -351,5 +319,69 @@ public enum ShotMerger {
         let cov = sab - sa * sb / n, va = saa - sa * sa / n, vb = sbb - sb * sb / n
         if va <= 1e-12 || vb <= 1e-12 { return -1 }
         return cov / (va * vb).squareRoot()
+    }
+}
+
+/// Global tone curve for merged HDR radiance (linear, 1.0 = white at the locked exposure).
+/// Identity below `knee`; above it a smooth logarithmic shoulder compresses up to `maxInput`
+/// (the darkest bracket's range) into the remaining headroom with matching slope at the
+/// knee. Applied to luminance with hue preserved, then gently desaturated towards white
+/// where a channel would clip.
+public struct HighlightCurve: Sendable {
+    public let knee: Float
+    public let maxInput: Float
+    private let c: Float
+
+    public static let standard = HighlightCurve(knee: 0.55, maxInput: 16)
+
+    public init(knee: Float, maxInput: Float) {
+        self.knee = knee
+        self.maxInput = maxInput
+        // Solve (1 - knee) / (c * ln(1 + (maxInput - knee) / c)) = 1 for c (slope 1 at the knee).
+        var lo: Float = 1e-4, hi: Float = 100
+        for _ in 0..<100 {
+            let mid = (lo + hi) / 2
+            let slope = (1 - knee) / (mid * logf(1 + (maxInput - knee) / mid))
+            if slope > 1 { lo = mid } else { hi = mid }
+        }
+        c = (lo + hi) / 2
+    }
+
+    public func map(_ x: Float) -> Float {
+        if x <= knee { return max(0, x) }
+        let y = knee + (1 - knee) * logf(1 + (x - knee) / c) / logf(1 + (maxInput - knee) / c)
+        return min(1, y)
+    }
+
+    /// Linear radiance in, display sRGB out.
+    public func apply(_ radiance: FloatImage) -> FloatImage {
+        var out = radiance
+        let n = radiance.width * radiance.height
+        out.data.withUnsafeMutableBufferPointer { d in
+            DispatchQueue.concurrentPerform(iterations: max(1, n / 4096 + 1)) { chunk in
+                let start = chunk * 4096, end = min(n, start + 4096)
+                if start >= end { return }
+                for i in start..<end {
+                    var r = max(0, d[i * 3]), g = max(0, d[i * 3 + 1]), b = max(0, d[i * 3 + 2])
+                    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    if y > knee {
+                        let s = map(y) / y
+                        r *= s; g *= s; b *= s
+                        // Push over-range channels towards white instead of shifting the hue.
+                        let m = max(r, g, b)
+                        if m > 1 {
+                            let t = min(1, (m - 1) / m)
+                            r = r + (1 - r) * t; g = g + (1 - g) * t; b = b + (1 - b) * t
+                            let m2 = max(r, g, b)
+                            if m2 > 1 { r /= m2; g /= m2; b /= m2 }
+                        }
+                    }
+                    d[i * 3] = ShotMerger.linearToSRGB(r)
+                    d[i * 3 + 1] = ShotMerger.linearToSRGB(g)
+                    d[i * 3 + 2] = ShotMerger.linearToSRGB(b)
+                }
+            }
+        }
+        return out
     }
 }

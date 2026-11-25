@@ -113,3 +113,53 @@ extension ShotMergerTests {
         XCTAssertLessThan(s[2] / s[0], 0.35)
     }
 }
+
+extension ShotMergerTests {
+    /// Two overlapping shots, one with the bright lamp in frame and one without, merged
+    /// separately, must agree in their overlap. Shot-local tone mapping (e.g. Mertens
+    /// fusion) breaks this and shows up as brightness blocks in the panorama.
+    func testMergedShotsAreConsistentAcrossShots() {
+        let scene = SyntheticScene(seed: 9)
+        let K = Intrinsics(fx: 300, fy: 300, cx: 159.5, cy: 119.5, width: 320, height: 240)
+        var rng = SplitMix(seed: 12)
+        func burst(_ R: Mat3) -> FloatImage {
+            let exposures = [1.0, 1.0, 0.25, 0.0625]
+            let frames = exposures.map { e in
+                BurstFrame(image: render(K, R, exposure: e, scene: scene, rng: &rng), intrinsics: K, rotation: R, exposure: e)
+            }
+            return ShotMerger.merge(frames).0
+        }
+        let Ra = Mat3.identity
+        let Rb = Mat3.rotation(axis: Vec3(0, 1, 0), angle: -0.35) // ~20 degrees to the right
+        let a = burst(Ra), b = burst(Rb)
+        // Warp b into a's geometry and compare where both are valid and not clipped.
+        let (bw, ok) = ShotMerger.warp(BurstFrame(image: b, intrinsics: K, rotation: Rb, exposure: 1),
+                                        onto: BurstFrame(image: a, intrinsics: K, rotation: Ra, exposure: 1), shift: (0, 0))
+        var diff = 0.0, n = 0.0
+        for i in 0..<(320 * 240) where ok[i] {
+            let va = a.data[i * 3 + 1], vb = bw.data[i * 3 + 1]
+            if va > 0.97 || vb > 0.97 { continue }
+            diff += Double(abs(va - vb)); n += 1
+        }
+        print("overlap pixels \(Int(n)), mean |difference| \(diff / max(n, 1))")
+        XCTAssertGreaterThan(n, 5000)
+        XCTAssertLessThan(diff / n, 0.02)
+    }
+
+    func testHighlightCurveIsMonotonicAndIdentityInMidtones() {
+        let c = HighlightCurve.standard
+        XCTAssertEqual(c.map(0.18), 0.18, accuracy: 1e-6)
+        XCTAssertEqual(c.map(0.45), 0.45, accuracy: 1e-5)
+        var last: Float = -1
+        for i in 0...400 {
+            let x = Float(i) / 25
+            let y = c.map(x)
+            XCTAssertGreaterThanOrEqual(y, last)
+            last = y
+        }
+        XCTAssertLessThan(c.map(1), 0.75)      // former white keeps headroom
+        XCTAssertGreaterThan(c.map(8), 0.9)    // +3 EV bright but below white
+        XCTAssertLessThan(c.map(4), c.map(8))  // and distinguishable
+    }
+}
+

@@ -365,8 +365,13 @@ final class CaptureSession: NSObject, ARSessionDelegate {
                 if let f = await self.grabHighResolution() { frames.append(f) }
             }
             if frames.isEmpty, let f = self.convert(fallbackFrame, exposure: 1) { frames.append(f) }
-            if self.hdrBracketing, !frames.isEmpty, await self.setExposure(ev: -2) {
-                if let dark = await self.grabVideoFrame(skip: 2, exposure: 0.25) { frames.append(dark) }
+            // Darker frames for the highlights: −2 EV for bright sky / lamps, −4 EV for the
+            // sky around the sun. Their real exposure ratio is measured from the image data.
+            if self.hdrBracketing, !frames.isEmpty {
+                for ev in [-2.0, -4.0] {
+                    guard await self.setExposure(ev: ev) else { break }
+                    if let dark = await self.grabVideoFrame(skip: 3, exposure: pow(2, ev)) { frames.append(dark) }
+                }
                 _ = await self.setExposure(ev: 0)
             }
             guard let first = frames.first else {
@@ -435,8 +440,10 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         processingGroup.enter()
         processingQueue.async { [processingGroup] in
             defer { processingGroup.leave() }
-            let merged = Self.merge(frames)
+            let (merged, info) = Self.merge(frames)
             ImageSupport.writeJPEG(merged, to: url, quality: 0.93)
+            // Diagnostics (requested vs measured exposure ratios etc.), kept with capture data.
+            if let info { try? info.write(to: url.deletingPathExtension().appendingPathExtension("merge.json")) }
             if let depthURL, let d = first.depth { _ = DepthIO.write(d, to: depthURL) }
             if let relURL { DepthEstimator.shared.estimate(merged, saveTo: relURL) }
         }
@@ -454,15 +461,23 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         }
     }
 
-    /// Exposure-fuses the burst onto the first frame's geometry.
-    private static func merge(_ frames: [GrabbedFrame]) -> CGImage {
-        guard frames.count > 1 else { return frames[0].image }
+    /// HDR-merges the burst onto the first frame's geometry. Returns the image and a JSON report.
+    private static func merge(_ frames: [GrabbedFrame]) -> (CGImage, Data?) {
+        guard frames.count > 1 else { return (frames[0].image, nil) }
         let burst = frames.map {
             BurstFrame(image: ImageSupport.floatImage(from: $0.image), intrinsics: $0.intrinsics,
                        rotation: Mat3($0.pose), exposure: $0.exposure)
         }
-        let (fused, _) = ShotMerger.merge(burst, reference: 0)
-        return ImageSupport.cgImage(from: fused) ?? frames[0].image
+        let (fused, report) = ShotMerger.merge(burst, reference: 0)
+        let info: [String: Any] = [
+            "requestedExposure": frames.map(\.exposure),
+            "measuredExposure": report.exposures,
+            "shifts": report.shifts.map { [$0.0, $0.1] },
+            "sharpness": report.sharpness,
+            "sizes": frames.map { [$0.image.width, $0.image.height] },
+        ]
+        let data = try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted])
+        return (ImageSupport.cgImage(from: fused) ?? frames[0].image, data)
     }
 
     /// Resolves once every captured shot has been merged and written to disk.

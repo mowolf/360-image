@@ -37,12 +37,13 @@ feature matching → rotation bundle adjustment → gain compensation → seam s
 multi-band blending (Burt & Adelson 1983). Pano 360 implements that pipeline, with one
 change that matters on a phone: **the sensors already give each photo's orientation.**
 
-0. **Per-target exposure burst.** At every dot the app takes two full-resolution frames
-   at the locked exposure and one −2 EV frame. `ShotMerger` aligns them (ARKit rotation
-   homography plus a sub-pixel NCC shift), measures the real exposure ratios from the
-   data, rejects ghosts (people moving) and motion-blurred frames, and combines them with
-   **Mertens exposure fusion**. Lamps and windows keep their detail, noise averages out,
-   and every shot gets the sharpest frame as its reference.
+0. **Per-target HDR burst.** At every dot the app takes two full-resolution frames at the
+   locked exposure plus −2 EV and −4 EV frames. `ShotMerger` aligns them (ARKit rotation
+   homography plus a sub-pixel NCC shift), measures the real exposure ratios from the data,
+   merges them into linear scene radiance (rejecting ghosts and motion blur), and applies
+   **one fixed highlight curve to every photo**. Exposure is locked, so overlapping photos
+   map the same sky to the same values. Per-shot local tone mapping such as Mertens fusion
+   made each photo look different and caused visible blocks in skies.
 1. **Sensor-guided capture.** ARKit's visual-inertial tracking (`worldAlignment = .gravity`)
    gives every photo a camera-to-world rotation, usually accurate to under 1°, plus exact
    per-frame intrinsics. Photos come from `captureHighResolutionFrame` and are downscaled
@@ -93,7 +94,8 @@ change that matters on a phone: **the sensors already give each photo's orientat
    (Boykov–Kolmogorov max-flow) on a 1536×768 grid. A seam between photos *a* and *b*
    costs |I_a − I_b| on both sides, so seams run where the photos agree and go around
    people, chairs and other parallax-affected objects instead of through them.
-7. **Multi-band blending.** Five Laplacian pyramid bands are blended with the blurred
+7. **Multi-band blending.** Six to seven Laplacian pyramid bands (the coarsest spans
+   about 15–25°) are blended with the blurred
    seam masks: low frequencies blend over a wide area (no exposure steps) and high
    frequencies over a few pixels (no ghosting). Warped tiles are hole-filled with
    push-pull first, so the pyramid never sees artificial edges. Pyramids wrap around

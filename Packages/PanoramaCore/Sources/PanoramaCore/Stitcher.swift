@@ -30,7 +30,8 @@ public struct StitchSource: Sendable {
 public struct StitchOptions: Sendable {
     /// Width of the equirectangular output (height = width / 2). Rounded to a multiple of 2^levels.
     public var outputWidth: Int = 6144
-    public var blendLevels: Int = 5
+    /// Laplacian pyramid levels for blending (nil = chosen from the output width).
+    public var blendLevels: Int? = nil
     public var refineAlignment = true
     public var compensateGain = true
     /// Graph-cut seams that avoid cutting through objects that differ between photos.
@@ -114,7 +115,9 @@ public final class Stitcher: @unchecked Sendable {
         var report = StitchReport()
         let n = sources.count
 
-        let levels = options.blendLevels
+        // Enough pyramid levels that the coarsest band spans ~15-25 degrees: exposure
+        // differences between photos then fade out smoothly instead of showing photo edges.
+        let levels = options.blendLevels ?? max(5, Int(log2(Double(options.outputWidth))) - 6)
         let align = 1 << (levels + 1)
         let W = max(align, (options.outputWidth / align) * align)
         let H = W / 2
