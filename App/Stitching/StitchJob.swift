@@ -231,37 +231,34 @@ extension StitchStage {
     var title: String { rawValue }
 }
 
-/// Registers and submits iOS continued-processing tasks for stitching.
+/// Submits iOS continued-processing tasks for stitching.
+///
+/// Note: iOS does not match a submitted identifier against a handler registered for the
+/// wildcard pattern ("No launch handler registered" exception -> crash). The wildcard is
+/// therefore only declared in Info.plist (BGTaskSchedulerPermittedIdentifiers), and each
+/// concrete identifier is registered right before it is submitted. If registration fails,
+/// nothing is submitted: the regular background time + resume-on-launch still protect
+/// the capture.
 enum BackgroundStitching {
     static let prefix = "com.moritzwolf.pano360.stitch"
-    private static var waiting: [String: StitchJob] = [:]
-    private static let lock = NSLock()
 
-    /// Must be called before the app finishes launching.
-    static func register() {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: "\(prefix).*", using: nil) { task in
-            lock.lock()
-            let job = waiting.removeValue(forKey: task.identifier)
-            lock.unlock()
+    static func submit(_ job: StitchJob) {
+        let identifier = "\(prefix).\(job.id.uuidString)"
+        let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { [weak job] task in
             guard let task = task as? BGContinuedProcessingTask, let job else {
                 task.setTaskCompleted(success: false)
                 return
             }
             job.attach(task)
         }
-    }
-
-    static func submit(_ job: StitchJob) {
-        let identifier = "\(prefix).\(job.id.uuidString)"
+        guard registered else { return }
         let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Stitching panorama",
                                                        subtitle: "Starting…")
         request.strategy = .fail
-        lock.lock(); waiting[identifier] = job; lock.unlock()
         do {
             try BGTaskScheduler.shared.submit(request)
         } catch {
-            // Not available: the regular background time + resume-on-launch still protect the capture.
-            lock.lock(); waiting[identifier] = nil; lock.unlock()
+            // Not available right now – fine, see above.
         }
     }
 }
