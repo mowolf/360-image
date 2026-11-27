@@ -135,10 +135,6 @@ struct CaptureView: View {
     private var topBar: some View {
         VStack(spacing: 10) {
             HStack {
-                Text(session.totalTargets > 0 ? "\(session.shots.count) / \(session.totalTargets)" : " ")
-                    .font(.subheadline.monospacedDigit().weight(.semibold))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(.ultraThinMaterial, in: Capsule())
                 Spacer()
                 if !session.shots.isEmpty {
                     Button { confirmRestart = true } label: {
@@ -174,12 +170,29 @@ struct CaptureView: View {
             Spacer()
 
             Button(action: finish) {
-                Label("Done", systemImage: "checkmark")
-                    .font(.headline)
-                    .padding(.horizontal, 22).padding(.vertical, 14)
-                    .background(session.shots.count >= 2 ? Color.orange : Color.gray.opacity(0.4), in: Capsule())
+                let done = session.shots.count, total = max(session.totalTargets, 1)
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle().stroke(.white.opacity(0.3), lineWidth: 3)
+                        Circle()
+                            .trim(from: 0, to: CGFloat(done) / CGFloat(total))
+                            .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 18, height: 18)
+                    Text(session.totalTargets > 0 ? "\(done)/\(session.totalTargets)" : "0")
+                        .font(.headline.monospacedDigit())
+                        .contentTransition(.numericText())
+                    if done >= 2 {
+                        Image(systemName: "checkmark").font(.subheadline.weight(.bold))
+                    }
+                }
+                .padding(.horizontal, 20).padding(.vertical, 14)
+                .background(done >= 2 ? Color.orange : Color.gray.opacity(0.4), in: Capsule())
+                .animation(.default, value: done)
             }
             .disabled(session.shots.count < 2)
+            .accessibilityLabel("Finish panorama, \(session.shots.count) of \(session.totalTargets) photos")
 
             Spacer()
 
