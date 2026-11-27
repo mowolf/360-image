@@ -9,7 +9,9 @@ struct PaywallCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Unlock unlimited panoramas")
                     .font(.title2.bold())
-                Text("You've created your \(Store.freeLimit) free panoramas. Unlock Pano 360 to capture as many as you like.")
+                Text(store.freeRemaining > 0
+                     ? "You have \(store.freeRemaining) of \(Store.freeLimit) free panoramas left. Unlock Pano 360 to capture as many as you like."
+                     : "You've created your \(Store.freeLimit) free panoramas. Unlock Pano 360 to capture as many as you like.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

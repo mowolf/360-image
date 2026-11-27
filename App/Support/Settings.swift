@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(Settings.keepCaptureData) private var keepCaptures = false
     @State private var storedBytes: Int64 = CaptureStore.totalSize()
     @State private var confirmDelete = false
+    @State private var showUnlock = false
     @Environment(PanoramaLibrary.self) private var library
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -27,16 +28,25 @@ struct SettingsView: View {
                             .foregroundStyle(.green)
                     } else {
                         LabeledContent("Free panoramas left", value: "\(store.freeRemaining) of \(Store.freeLimit)")
-                        Button {
-                            Task { await store.purchase() }
-                        } label: {
-                            HStack {
-                                Text("Unlock unlimited panoramas")
+                        Button { showUnlock = true } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "infinity")
+                                    .font(.headline)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Unlock unlimited panoramas").font(.headline)
+                                    Text("One-time purchase · \(store.displayPrice)").font(.caption).opacity(0.85)
+                                }
                                 Spacer()
-                                if store.isPurchasing { ProgressView() } else { Text(store.displayPrice).foregroundStyle(.secondary) }
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).opacity(0.7)
                             }
+                            .foregroundStyle(.white)
+                            .padding(.vertical, 12).padding(.horizontal, 14)
+                            .background(LinearGradient(colors: [.orange, Color(red: 1, green: 0.42, blue: 0.2)],
+                                                       startPoint: .leading, endPoint: .trailing),
+                                        in: RoundedRectangle(cornerRadius: 14))
                         }
-                        .disabled(store.isPurchasing)
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     }
                     Button("Restore purchases") { Task { await store.restore() } }
                 } header: {
@@ -87,6 +97,24 @@ struct SettingsView: View {
                 Section {
                     LabeledContent("Version", value: Self.version)
                 }
+            }
+            .sheet(isPresented: $showUnlock) {
+                ZStack(alignment: .topTrailing) {
+                    Color.black.ignoresSafeArea()
+                    PaywallCard()
+                        .frame(maxHeight: .infinity)
+                    Button { showUnlock = false } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline)
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .foregroundStyle(.white)
+                    .padding(16)
+                    .accessibilityLabel("Close")
+                }
+                .presentationDetents([.large])
+                .onChange(of: store.isUnlimited) { _, unlocked in if unlocked { showUnlock = false } }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
