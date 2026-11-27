@@ -128,6 +128,45 @@ enum CaptureStore {
         return try result.get()
     }
 
+    // MARK: Pending (not yet stitched) captures
+
+    private static func pendingURL(_ folder: String) -> URL {
+        root.appendingPathComponent(folder).appendingPathComponent("pending")
+    }
+
+    /// Marks a capture as waiting to be stitched (survives the app being stopped).
+    static func markPending(_ folder: String) {
+        let url = pendingURL(folder)
+        if !FileManager.default.fileExists(atPath: url.path) { try? Data("0".utf8).write(to: url) }
+    }
+
+    static func clearPending(_ folder: String) {
+        try? FileManager.default.removeItem(at: pendingURL(folder))
+    }
+
+    /// Counts a failed stitching attempt; returns the number of failures so far.
+    @discardableResult
+    static func recordFailure(_ folder: String) -> Int {
+        let url = pendingURL(folder)
+        let n = (Int((try? String(contentsOf: url, encoding: .utf8)) ?? "0") ?? 0) + 1
+        try? Data("\(n)".utf8).write(to: url)
+        return n
+    }
+
+    /// Captures whose stitching was interrupted, oldest first.
+    static func pendingFolders() -> [String] {
+        let fm = FileManager.default
+        let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        return dirs
+            .filter { fm.fileExists(atPath: $0.appendingPathComponent("pending").path) }
+            .sorted {
+                let a = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return a < b
+            }
+            .map(\.lastPathComponent)
+    }
+
     /// Total size of all stored captures (bytes).
     static func totalSize() -> Int64 {
         let fm = FileManager.default

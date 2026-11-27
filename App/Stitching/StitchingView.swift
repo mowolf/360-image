@@ -48,7 +48,7 @@ struct StitchingView: View {
             }
             .frame(width: 150, height: 150)
             VStack(spacing: 6) {
-                Text("Creating your panorama").font(.title3.bold())
+                Text(job.origin == .resume ? "Finishing your panorama" : "Creating your panorama").font(.title3.bold())
                 Text(job.stage.title).foregroundStyle(.secondary)
                     .contentTransition(.opacity)
                     .animation(.default, value: job.stage)
@@ -66,19 +66,5 @@ struct StitchingView: View {
         .foregroundStyle(.white)
     }
 
-    /// Maps stage-local progress to one overall bar.
-    private var overallProgress: Double {
-        let p = job.progress
-        switch job.stage {
-        case .preparing: return 0.10 * p
-        case .aligning: return 0.10 + 0.35 * p
-        case .optimizing: return 0.45 + 0.05 * p
-        case .depth: return 0.40 + 0.05 * p
-        case .refining: return 0.45 + 0.05 * p
-        case .exposure: return 0.50 + 0.03 * p
-        case .seams: return 0.53 + 0.07 * p
-        case .blending: return 0.60 + 0.35 * p
-        case .finishing: return 0.95 + 0.05 * p
-        }
-    }
+    private var overallProgress: Double { job.overallProgress }
 }

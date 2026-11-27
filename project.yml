@@ -61,6 +61,8 @@ targets:
       path: App/Info.plist
       properties:
         UIRequiredDeviceCapabilities: [arkit, metal]
+        BGTaskSchedulerPermittedIdentifiers: ["com.moritzwolf.pano360.stitch.*"]
+        UIBackgroundModes: [processing]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait

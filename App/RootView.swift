@@ -7,8 +7,20 @@ struct RootView: View {
     @State private var job: StitchJob?
     @State private var showGallery = false
     @State private var captureID = UUID()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        captureScreen
+    }
+
+    /// A capture whose stitching was interrupted (app stopped by iOS) is finished first.
+    private func resumePendingCapture() {
+        guard job == nil, let folder = CaptureStore.pendingFolders().first,
+              let capture = CaptureStore.load(folder: folder) else { return }
+        job = StitchJob(capture: capture, library: library, existingCaptureFolder: folder, origin: .resume)
+    }
+
+    private var captureScreen: some View {
         CaptureView(
             onFinish: { result in
                 job = StitchJob(capture: result, library: library)
@@ -21,6 +33,11 @@ struct RootView: View {
         }
         .sheet(isPresented: $showGallery) {
             GalleryView()
+        }
+        .task { resumePendingCapture() }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            if let job { job.resumeIfInterrupted() } else { resumePendingCapture() }
         }
     }
 }
