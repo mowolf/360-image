@@ -24,7 +24,7 @@ struct SettingsView: View {
                     Toggle("Save to Photos automatically", isOn: $autoSave)
                         .tint(.green)
                 } footer: {
-                    Text("New panoramas are added to the \u{201C}\(PhotoSaver.albumName)\u{201D} album with their 360° metadata.")
+                    Text("New panoramas are added to your photo library with their 360° metadata.")
                 }
                 Section {
                     Toggle("HDR capture", isOn: $hdr)

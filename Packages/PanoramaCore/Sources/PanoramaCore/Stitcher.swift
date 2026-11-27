@@ -168,7 +168,7 @@ public final class Stitcher: @unchecked Sendable {
             let aligner = PairwiseAligner()
             let cams = (0..<n).map { camera($0, grayK[$0], rotations[$0]) }
             report.pairsTried = aligner.candidatePairs(cameras: cams).count
-            let pairs = aligner.alignAll(gray: gray, cameras: cams) { progress?(.aligning, $0) }
+            let pairs = aligner.alignAll(gray: gray, cameras: cams, isCancelled: isCancelled) { progress?(.aligning, $0) }
             if isCancelled() { throw StitchError.cancelled }
             report.pairsAligned = pairs.count
             var matches = pairs.flatMap { $0.matches }
@@ -265,7 +265,7 @@ public final class Stitcher: @unchecked Sendable {
                 var aligner2 = PairwiseAligner()
                 aligner2.config.maxSensorErrorDegrees = 3
                 let cams2 = (0..<n).map { camera($0, grayK[$0], rotations[$0]) }
-                let pairs2 = aligner2.alignAll(gray: gray, cameras: cams2) { progress?(.refining, $0 * 0.9) }
+                let pairs2 = aligner2.alignAll(gray: gray, cameras: cams2, isCancelled: isCancelled) { progress?(.refining, $0 * 0.9) }
                 if isCancelled() { throw StitchError.cancelled }
                 // The new rays were measured against the refined rotations; express them in
                 // the sensor-relative form the adjuster expects (rays are camera-frame already).

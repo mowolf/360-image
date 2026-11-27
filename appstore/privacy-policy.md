@@ -12,7 +12,7 @@ share any personal data**, and the app contains no analytics, advertising or tra
 | Camera | Taking the photos that are stitched into your panorama. | No |
 | Motion & orientation (ARKit, CoreMotion) | Guiding the capture, aligning photos, and the "look around" mode of the viewer. | No |
 | Location (optional) | Embedding GPS position and compass heading in your panoramas so they appear on the map. | Only inside panoramas you choose to share |
-| Photos (optional) | Saving finished panoramas to your photo library / the "Pano 360" album. | No |
+| Photos – add only (optional) | Saving finished panoramas to your photo library. The app cannot see your other photos. | No |
 
 ## Your data
 

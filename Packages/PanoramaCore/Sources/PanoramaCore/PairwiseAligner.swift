@@ -88,6 +88,7 @@ public struct PairwiseAligner: Sendable {
 
     /// Aligns all candidate pairs. `gray` are single-channel images matching `cameras`' intrinsics.
     public func alignAll(gray: [FloatImage], cameras: [PanoCamera],
+                         isCancelled: () -> Bool = { false },
                          progress: ((Double) -> Void)? = nil) -> [PairAlignment] {
         let pairs = candidatePairs(cameras: cameras)
         var results = [PairAlignment?](repeating: nil, count: pairs.count)
@@ -95,6 +96,7 @@ public struct PairwiseAligner: Sendable {
         var done = 0
         results.withUnsafeMutableBufferPointer { res in
             DispatchQueue.concurrentPerform(iterations: pairs.count) { k in
+                if isCancelled() { return }   // stop promptly (e.g. background time ending)
                 let (i, j) = pairs[k]
                 let r = align(i: i, j: j, grayI: gray[i], grayJ: gray[j], camI: cameras[i], camJ: cameras[j])
                 res[k] = r

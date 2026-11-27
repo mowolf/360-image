@@ -19,7 +19,7 @@ PROFESSIONAL-GRADE STITCHING, ON DEVICE
 SHARE IN 360°
 • Exports standard equirectangular JPEGs with Photo Sphere (GPano) metadata
 • Viewable as interactive 360° photos in Google Photos, Facebook and other 360° viewers
-• Optional automatic saving to a "Pano 360" album in Photos
+• Optional automatic saving to your photo library
 • GPS location and compass heading are embedded, so your spheres appear on the map
 
 EXPLORE

@@ -144,9 +144,9 @@ enum CaptureStore {
         try? FileManager.default.removeItem(at: pendingURL(folder))
     }
 
-    /// Counts a failed stitching attempt; returns the number of failures so far.
+    /// Counts a stitching attempt; returns the number of attempts so far.
     @discardableResult
-    static func recordFailure(_ folder: String) -> Int {
+    static func recordAttempt(_ folder: String) -> Int {
         let url = pendingURL(folder)
         let n = (Int((try? String(contentsOf: url, encoding: .utf8)) ?? "0") ?? 0) + 1
         try? Data("\(n)".utf8).write(to: url)

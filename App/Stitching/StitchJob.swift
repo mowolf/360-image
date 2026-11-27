@@ -95,7 +95,12 @@ final class StitchJob: Identifiable {
                 if folder == nil { folder = try CaptureStore.persist(capture) }
                 guard let folder else { throw CocoaError(.fileNoSuchFile) }
                 await MainActor.run { self?.captureFolder = folder }
-                if origin != .restitch { CaptureStore.markPending(folder) }
+                if origin != .restitch {
+                    CaptureStore.markPending(folder)
+                    // Counted *before* the work: a crash cannot be caught, so a capture that
+                    // keeps crashing the stitcher must not be retried forever.
+                    if CaptureStore.recordAttempt(folder) > 3 { throw StitchJobError.tooManyAttempts }
+                }
                 guard let stored = CaptureStore.load(folder: folder) else { throw CocoaError(.fileReadCorruptFile) }
 
                 let sources = stored.shots.map { shot in
@@ -153,11 +158,9 @@ final class StitchJob: Identifiable {
                 }
             } catch {
                 if let folder, origin != .restitch {
-                    // Give up on this capture after repeated failures so it cannot loop forever.
-                    if CaptureStore.recordFailure(folder) >= 2 {
-                        CaptureStore.clearPending(folder)
-                        if !UserDefaults.standard.bool(forKey: Settings.keepCaptureData) { CaptureStore.delete(folder: folder) }
-                    }
+                    // Don't retry automatically after an error; keep the data only if the user keeps captures.
+                    CaptureStore.clearPending(folder)
+                    if !UserDefaults.standard.bool(forKey: Settings.keepCaptureData) { CaptureStore.delete(folder: folder) }
                 }
                 await MainActor.run {
                     self?.errorMessage = error.localizedDescription
@@ -185,8 +188,13 @@ final class StitchJob: Identifiable {
     private func beginBackgroundTime() {
         guard backgroundTask == .invalid else { return }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "stitch") { [weak self] in
-            // Out of time: stop cleanly (the capture stays pending) instead of being killed.
-            self?.expire()
+            guard let self else { return }
+            // The assertion must be ended *synchronously* here, otherwise iOS terminates the app.
+            UIApplication.shared.endBackgroundTask(self.backgroundTask)
+            self.backgroundTask = .invalid
+            // Only stop the work if no continued-processing task keeps the app running;
+            // the capture stays pending and is finished when the app is active again.
+            if self.continued == nil { self.expired = true }
         }
     }
 
@@ -205,15 +213,10 @@ final class StitchJob: Identifiable {
         continued.updateTitle("Stitching panorama", subtitle: stage.title)
     }
 
+    /// The continued-processing task is ending: stop promptly (checked per photo pair /
+    /// per photo), keep the capture pending and finish it when the app is active again.
     private func expire() {
         expired = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            if self.backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(self.backgroundTask)
-                self.backgroundTask = .invalid
-            }
-        }
     }
 
     @MainActor
@@ -224,6 +227,13 @@ final class StitchJob: Identifiable {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             backgroundTask = .invalid
         }
+    }
+}
+
+enum StitchJobError: LocalizedError {
+    case tooManyAttempts
+    var errorDescription: String? {
+        "This panorama could not be finished after several attempts. Please try capturing it again."
     }
 }
 
