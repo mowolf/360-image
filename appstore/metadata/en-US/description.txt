@@ -26,4 +26,6 @@ EXPLORE
 • Built-in 360° viewer: drag or move your phone to look around, pinch to zoom
 • All processing happens on your iPhone – no account, no uploads, no tracking
 
+Your first 3 panoramas are free. Unlock unlimited panoramas with a one-time purchase – no subscription.
+
 Requires an iPhone with ARKit support. Works best on iPhones with LiDAR (Pro models), but every supported iPhone gets depth-based parallax correction.

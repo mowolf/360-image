@@ -28,6 +28,10 @@ struct CaptureView: View {
     @State private var session = CaptureSession()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(Settings.onboardingSeen) private var onboardingSeen = false
+    @Environment(Store.self) private var store
+
+    /// Free panoramas used up and nothing captured yet in this session.
+    private var showPaywall: Bool { onboardingSeen && !store.canCreatePanorama && session.shots.isEmpty }
     @State private var cameraDenied = false
     @State private var confirmRestart = false
     @State private var handedOff = false
@@ -57,6 +61,12 @@ struct CaptureView: View {
                     .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
 
+            if showPaywall {
+                Color.black.opacity(0.45).ignoresSafeArea()
+                PaywallCard()
+                    .transition(.scale(scale: 0.95).combined(with: .opacity))
+            }
+
             if cameraDenied {
                 permissionView
             } else if case .failed(let message) = session.phase {
@@ -71,8 +81,10 @@ struct CaptureView: View {
             session.stop()
             if !handedOff { session.discardFiles() }
         }
-        .onAppear { session.guidancePaused = !onboardingSeen }
-        .onChange(of: onboardingSeen) { _, seen in session.guidancePaused = !seen }
+        .onAppear { session.guidancePaused = !onboardingSeen || showPaywall }
+        .onChange(of: onboardingSeen) { _, _ in session.guidancePaused = !onboardingSeen || showPaywall }
+        .onChange(of: showPaywall) { _, paywall in session.guidancePaused = !onboardingSeen || paywall }
+        .animation(.default, value: showPaywall)
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:

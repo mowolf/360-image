@@ -25,6 +25,8 @@ final class StitchJob: Identifiable {
     var report: StitchReport?
     /// The background time ran out; the job restarts when the app is active again.
     var interrupted = false
+    /// Called on the main actor when a new (not re-stitched) panorama was created.
+    @ObservationIgnored var onNewPanorama: (@MainActor () -> Void)?
 
     @ObservationIgnored private let library: PanoramaLibrary
     @ObservationIgnored private let capture: CaptureResult
@@ -140,6 +142,7 @@ final class StitchJob: Identifiable {
                 await MainActor.run {
                     self?.report = res.report
                     self?.result = item
+                    if origin != .restitch { self?.onNewPanorama?() }
                     self?.finishBackground(success: true)
                 }
             } catch StitchError.cancelled {

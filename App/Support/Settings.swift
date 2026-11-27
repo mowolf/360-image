@@ -15,11 +15,36 @@ struct SettingsView: View {
     @State private var storedBytes: Int64 = CaptureStore.totalSize()
     @State private var confirmDelete = false
     @Environment(PanoramaLibrary.self) private var library
+    @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    if store.isUnlimited {
+                        Label("Pano 360 Unlimited is unlocked", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        LabeledContent("Free panoramas left", value: "\(store.freeRemaining) of \(Store.freeLimit)")
+                        Button {
+                            Task { await store.purchase() }
+                        } label: {
+                            HStack {
+                                Text("Unlock unlimited panoramas")
+                                Spacer()
+                                if store.isPurchasing { ProgressView() } else { Text(store.displayPrice).foregroundStyle(.secondary) }
+                            }
+                        }
+                        .disabled(store.isPurchasing)
+                    }
+                    Button("Restore purchases") { Task { await store.restore() } }
+                } header: {
+                    Text("Pano 360 Unlimited")
+                } footer: {
+                    if let message = store.message { Text(message) }
+                    else if !store.isUnlimited { Text("One-time purchase, no subscription. The first \(Store.freeLimit) panoramas are free.") }
+                }
                 Section {
                     Toggle("Save to Photos automatically", isOn: $autoSave)
                         .tint(.green)

@@ -26,4 +26,6 @@ ERKUNDEN
 • Integrierter 360°-Viewer: Wischen oder iPhone bewegen, zum Zoomen aufziehen
 • Alles wird auf deinem iPhone verarbeitet – kein Konto, keine Uploads, kein Tracking
 
+Deine ersten 3 Panoramen sind kostenlos. Unbegrenzt viele Panoramen per Einmalkauf freischalten – kein Abo.
+
 Erfordert ein iPhone mit ARKit-Unterstützung. Am besten auf iPhones mit LiDAR (Pro-Modelle).

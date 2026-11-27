@@ -16,11 +16,12 @@ App Store Connect → your app → *App Information* / *1.0 Prepare for Submissi
 | `app-privacy.md` | App Privacy questionnaire answers ("Data Not Collected") |
 | `review-notes.md` | Version → App Review Information → Notes |
 | `screenshots.md` | What to capture for the required screenshots |
+| `in-app-purchase.md` | Setting up the "Pano 360 Unlimited" in-app purchase |
 
 Other settings:
 - **Category:** Primary *Photo & Video*, secondary *Travel* (optional)
 - **Age rating:** 4+ (answer "None" to every content question)
-- **Price:** your choice; the app has no in-app purchases or ads
+- **Price:** Free download with one in-app purchase (see `in-app-purchase.md`), no ads
 - **Export compliance:** already declared in the build (`ITSAppUsesNonExemptEncryption = NO`)
 - **Support URL / Marketing URL:** required / optional. A GitHub Pages page works.
 - **Copyright:** e.g. `2026 Moritz Wolf`

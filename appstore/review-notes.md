@@ -12,4 +12,8 @@ How to test (about 1 minute):
 5. Drag to look around. The share button offers "Share…" and "Save to Photos".
 6. The grid button (bottom left on the camera screen) opens the gallery. The gear icon there opens Settings.
 
-No login, no account, no in-app purchases, no network access needed.
+No login or account needed.
+
+In-app purchase: the first 3 panoramas are free. After that the camera screen shows an unlock card
+for "Pano 360 Unlimited" (non-consumable, `com.moritzwolf.pano360.unlimited`). "Restore purchases"
+is in Settings (gallery → gear icon).
