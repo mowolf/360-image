@@ -19,7 +19,7 @@ PROFESSIONELLES STITCHING AUF DEM GERÄT
 TEILEN IN 360°
 • Exportiert equirektangulare JPEGs mit Photo-Sphere-Metadaten (GPano)
 • Als interaktive 360°-Fotos in Google Fotos, Facebook und anderen 360°-Viewern
-• Optional automatisch in der Fotomediathek speichern
+• Optional automatisch in ein „Pano 360"-Album in Fotos speichern
 • GPS-Position und Blickrichtung werden eingebettet
 
 ERKUNDEN

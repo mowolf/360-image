@@ -48,7 +48,8 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: "Pano 360"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
         INFOPLIST_KEY_NSCameraUsageDescription: "The camera is used to capture the photos that are stitched into your 360° panorama."
-        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Save your finished 360° panoramas to your photo library."
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Pano 360 adds your finished 360° panoramas to your photo library."
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Pano 360 keeps your panoramas together in a \u201CPano 360\u201D album. iOS only lets apps create and fill an album with photo library access. Pano 360 never reads, changes or uploads your other photos."
         INFOPLIST_KEY_NSMotionUsageDescription: "Motion data lets you look around your panorama by moving your phone."
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Your location is saved in your panoramas so they show up on the map in Photos and other apps."
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait

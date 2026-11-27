@@ -24,7 +24,7 @@ struct SettingsView: View {
                     Toggle("Save to Photos automatically", isOn: $autoSave)
                         .tint(.green)
                 } footer: {
-                    Text("New panoramas are added to your photo library with their 360° metadata.")
+                    Text("New panoramas are added to the \u{201C}\(PhotoSaver.albumName)\u{201D} album with their 360° metadata. To create the album, iOS asks for access to your photo library – Pano 360 never reads or uploads your other photos. Without it, panoramas are still saved to Recents.")
                 }
                 Section {
                     Toggle("HDR capture", isOn: $hdr)
