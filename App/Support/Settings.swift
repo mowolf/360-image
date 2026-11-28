@@ -99,22 +99,24 @@ struct SettingsView: View {
                 }
             }
             .sheet(isPresented: $showUnlock) {
-                ZStack(alignment: .topTrailing) {
-                    Color.black.ignoresSafeArea()
-                    PaywallCard()
-                        .frame(maxHeight: .infinity)
-                    Button { showUnlock = false } label: {
-                        Image(systemName: "xmark")
-                            .font(.headline)
-                            .frame(width: 36, height: 36)
-                            .background(.ultraThinMaterial, in: Circle())
+                PaywallCard(inSheet: true)
+                    .padding(.top, 8)
+                    .overlay(alignment: .topTrailing) {
+                        Button { showUnlock = false } label: {
+                            Image(systemName: "xmark")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(width: 30, height: 30)
+                                .background(.white.opacity(0.12), in: Circle())
+                        }
+                        .foregroundStyle(.white)
+                        .padding(14)
+                        .accessibilityLabel("Close")
                     }
-                    .foregroundStyle(.white)
-                    .padding(16)
-                    .accessibilityLabel("Close")
-                }
-                .presentationDetents([.large])
-                .onChange(of: store.isUnlimited) { _, unlocked in if unlocked { showUnlock = false } }
+                    .presentationDetents([.height(560), .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(.regularMaterial)
+                    .environment(\.colorScheme, .dark)
+                    .onChange(of: store.isUnlimited) { _, unlocked in if unlocked { showUnlock = false } }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

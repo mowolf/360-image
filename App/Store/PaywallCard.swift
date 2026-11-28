@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Shown on the camera screen once the free panoramas are used up.
 struct PaywallCard: View {
+    /// true: shown as the content of a sheet (no own card background).
+    var inSheet = false
     @Environment(Store.self) private var store
 
     var body: some View {
@@ -46,8 +48,10 @@ struct PaywallCard: View {
                 .frame(maxWidth: .infinity)
         }
         .padding(24)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
-        .padding(.horizontal, 20)
+        .background {
+            if !inSheet { RoundedRectangle(cornerRadius: 28).fill(.regularMaterial) }
+        }
+        .padding(.horizontal, inSheet ? 0 : 20)
         .environment(\.colorScheme, .dark)
     }
 
