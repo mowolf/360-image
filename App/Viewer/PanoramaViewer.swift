@@ -67,7 +67,23 @@ struct PanoramaViewer: UIViewRepresentable {
             pipeline = try? device.makeRenderPipelineState(descriptor: desc)
         }
 
+        private var url: URL?
+
+        override init() {
+            super.init()
+            // Opened from a notification while the app was still in the background: the GPU is
+            // not available then, so (re)load and redraw once the app is active.
+            NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
+                                                   name: UIApplication.didBecomeActiveNotification, object: nil)
+        }
+
+        @objc private func becameActive() {
+            if texture == nil, let url { load(url: url) }
+            view?.setNeedsDisplay()
+        }
+
         func load(url: URL) {
+            self.url = url
             guard let device else { return }
             let loader = MTKTextureLoader(device: device)
             let options: [MTKTextureLoader.Option: Any] = [

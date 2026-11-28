@@ -25,6 +25,8 @@ enum CaptureStore {
         var depth: String?
         var relativeDepth: String?
         var location: ShotLocation?
+        var hdr: String?
+        var exposureValue: Double?
     }
 
     struct Manifest: Codable {
@@ -53,7 +55,7 @@ enum CaptureStore {
                            rotation: (0..<9).map { s.rotation[$0 / 3, $0 % 3] },
                            position: [s.position.x, s.position.y, s.position.z],
                            depth: s.depthURL?.lastPathComponent, relativeDepth: s.relativeDepthURL?.lastPathComponent,
-                           location: s.location)
+                           location: s.location, hdr: s.hdrURL?.lastPathComponent, exposureValue: s.exposureValue)
             },
             scenePoints: capture.scenePoints.flatMap { [Float($0.x), Float($0.y), Float($0.z)] })
         let enc = JSONEncoder()
@@ -80,7 +82,8 @@ enum CaptureStore {
                          r.rotation[5], r.rotation[6], r.rotation[7], r.rotation[8])
             return CapturedShot(id: r.id, targetID: r.targetID, url: img, intrinsics: r.intrinsics, rotation: R,
                                 position: Vec3(r.position[0], r.position[1], r.position[2]),
-                                depthURL: file(r.depth), relativeDepthURL: file(r.relativeDepth), location: r.location)
+                                depthURL: file(r.depth), relativeDepthURL: file(r.relativeDepth), location: r.location,
+                                hdrURL: file(r.hdr), exposureValue: r.exposureValue)
         }
         var points: [Vec3] = []
         points.reserveCapacity(m.scenePoints.count / 3)

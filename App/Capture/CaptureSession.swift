@@ -20,6 +20,9 @@ struct CapturedShot: Identifiable, Sendable {
     let relativeDepthURL: URL?
     /// GPS position + camera heading at capture time (if location access was granted).
     var location: ShotLocation? = nil
+    /// Merged scene radiance (16-bit log PNG) and the shot's auto exposure (duration × ISO).
+    var hdrURL: URL? = nil
+    var exposureValue: Double? = nil
 }
 
 /// Drives the guided capture: tracks the phone's orientation with ARKit, decides which
@@ -65,7 +68,6 @@ final class CaptureSession: NSObject, ARSessionDelegate {
     @ObservationIgnored let sessionDirectory: URL
     /// Mean position of the photos taken so far (the panorama's centre).
     @ObservationIgnored private var anchorPosition: Vec3?
-    @ObservationIgnored private var baseExposure: (CMTime, Float)?
     @ObservationIgnored private var holdingScreen = false
     @ObservationIgnored let locationRecorder = LocationRecorder()
     /// While true (e.g. the intro card is shown) nothing is captured automatically.
@@ -352,33 +354,34 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         let depth: ARDepthData?
     }
 
-    /// Captures the burst for one target: two full-resolution frames at the locked exposure
-    /// (the sharper one becomes the reference, the other averages out noise) plus a −2 EV
-    /// video frame that keeps lamps and windows from blowing out. Files are merged and
-    /// written on a background queue so the user can move on immediately.
+    /// Captures the burst for one target. Exposure is metered automatically for every
+    /// direction (a dark start point must not decide the bright side); the meter reading
+    /// (duration × ISO) is recorded so all shots can be put on one brightness scale later.
+    /// Two full-resolution frames at that exposure plus −2 EV and −4 EV video frames keep
+    /// highlights. Files are merged and written on a background queue.
     private func capture(target: CaptureTarget, fallbackFrame: ARFrame) {
         isCapturingPhoto = true
-        lockExposureIfNeeded()
+        lockWhiteBalanceIfNeeded()
         Task { @MainActor in
+            let meter = self.currentExposure()
             var frames: [GrabbedFrame] = []
             for _ in 0..<2 {
                 if let f = await self.grabHighResolution() { frames.append(f) }
             }
             if frames.isEmpty, let f = self.convert(fallbackFrame, exposure: 1) { frames.append(f) }
-            // Darker frames for the highlights: −2 EV for bright sky / lamps, −4 EV for the
-            // sky around the sun. Their real exposure ratio is measured from the image data.
-            if self.hdrBracketing, !frames.isEmpty {
+            if self.hdrBracketing, !frames.isEmpty, let meter {
                 for ev in [-2.0, -4.0] {
-                    guard await self.setExposure(ev: ev) else { break }
+                    guard await self.setExposure(ev: ev, base: meter) else { break }
                     if let dark = await self.grabVideoFrame(skip: 3, exposure: pow(2, ev)) { frames.append(dark) }
                 }
-                _ = await self.setExposure(ev: 0)
+                self.restoreAutoExposure()
             }
             guard let first = frames.first else {
                 self.isCapturingPhoto = false
                 return
             }
-            self.finishCapture(target: target, frames: frames, preview: first)
+            let exposureValue = meter.map { CMTimeGetSeconds($0.0) * Double($0.1) }
+            self.finishCapture(target: target, frames: frames, preview: first, exposureValue: exposureValue)
         }
     }
 
@@ -418,7 +421,8 @@ final class CaptureSession: NSObject, ARSessionDelegate {
                             depth: frame.smoothedSceneDepth ?? frame.sceneDepth)
     }
 
-    private func finishCapture(target: CaptureTarget, frames: [GrabbedFrame], preview first: GrabbedFrame) {
+    private func finishCapture(target: CaptureTarget, frames: [GrabbedFrame], preview first: GrabbedFrame,
+                               exposureValue: Double?) {
         isCapturingPhoto = false
         holdProgress = 0
         guard phase == .capturing else { return }
@@ -428,9 +432,11 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         let relURL = DepthEstimator.shared.isAvailable ? sessionDirectory.appendingPathComponent("\(id.uuidString).rel") : nil
         let pose = first.pose
         let pos = SIMD3<Float>(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
+        let hdrURL = exposureValue != nil ? sessionDirectory.appendingPathComponent("\(id.uuidString).hdr.png") : nil
         let shot = CapturedShot(id: id, targetID: target.id, url: url, intrinsics: first.intrinsics,
                                 rotation: Mat3(pose), position: Vec3(pos), depthURL: depthURL,
-                                relativeDepthURL: relURL, location: locationRecorder.snapshot())
+                                relativeDepthURL: relURL, location: locationRecorder.snapshot(),
+                                hdrURL: hdrURL, exposureValue: exposureValue)
         shots.append(shot)
         capturedTargets.insert(target.id)
         updateAnchor()
@@ -440,8 +446,13 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         processingGroup.enter()
         processingQueue.async { [processingGroup] in
             defer { processingGroup.leave() }
-            let (merged, info) = Self.merge(frames)
+            let (merged, radiance, info) = Self.merge(frames, exposureValue: exposureValue)
             ImageSupport.writeJPEG(merged, to: url, quality: 0.93)
+            // Scene radiance (16-bit log PNG) for the panorama-wide HDR tone mapping.
+            if let hdrURL, let radiance {
+                ImageSupport.write16BitPNG(HDRRadiance.encode(radiance), width: radiance.width,
+                                           height: radiance.height, to: hdrURL)
+            }
             // Diagnostics (requested vs measured exposure ratios etc.), kept with capture data.
             if let info { try? info.write(to: url.deletingPathExtension().appendingPathExtension("merge.json")) }
             if let depthURL, let d = first.depth { _ = DepthIO.write(d, to: depthURL) }
@@ -461,23 +472,28 @@ final class CaptureSession: NSObject, ARSessionDelegate {
         }
     }
 
-    /// HDR-merges the burst onto the first frame's geometry. Returns the image and a JSON report.
-    private static func merge(_ frames: [GrabbedFrame]) -> (CGImage, Data?) {
-        guard frames.count > 1 else { return (frames[0].image, nil) }
+    /// HDR-merges the burst onto the first frame's geometry. Returns a display image (for
+    /// previews and depth estimation), the scene radiance and a JSON report.
+    private static func merge(_ frames: [GrabbedFrame], exposureValue: Double?) -> (CGImage, FloatImage?, Data?) {
         let burst = frames.map {
             BurstFrame(image: ImageSupport.floatImage(from: $0.image), intrinsics: $0.intrinsics,
                        rotation: Mat3($0.pose), exposure: $0.exposure)
         }
-        let (fused, report) = ShotMerger.merge(burst, reference: 0)
-        let info: [String: Any] = [
+        let (radiance, report) = ShotMerger.mergeRadiance(burst, reference: 0)
+        let display = HighlightCurve.standard.apply(radiance)
+        let stats = HDRRadiance.stats(radiance)
+        var info: [String: Any] = [
             "requestedExposure": frames.map(\.exposure),
             "measuredExposure": report.exposures,
             "shifts": report.shifts.map { [$0.0, $0.1] },
             "sharpness": report.sharpness,
             "sizes": frames.map { [$0.image.width, $0.image.height] },
+            "radianceMedian": stats.median,
+            "radianceP999": stats.p999,
         ]
+        if let exposureValue { info["exposureValue"] = exposureValue }
         let data = try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted])
-        return (ImageSupport.cgImage(from: fused) ?? frames[0].image, data)
+        return (ImageSupport.cgImage(from: display) ?? frames[0].image, radiance, data)
     }
 
     /// Resolves once every captured shot has been merged and written to disk.
@@ -504,24 +520,38 @@ final class CaptureSession: NSObject, ARSessionDelegate {
 
     // MARK: Exposure
 
-    /// Locks exposure and white balance before the first photo so all photos match. Focus
-    /// stays automatic: near walls and tables must stay sharp.
-    private func lockExposureIfNeeded() {
+    /// Locks white balance at the first photo so colours match; exposure stays automatic
+    /// (each shot's exposure is recorded instead). Focus stays automatic too.
+    private func lockWhiteBalanceIfNeeded() {
         guard !exposureLocked, let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
         do {
             try device.lockForConfiguration()
-            baseExposure = (device.exposureDuration, device.iso)
-            if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
             if device.isWhiteBalanceModeSupported(.locked) { device.whiteBalanceMode = .locked }
             device.unlockForConfiguration()
             exposureLocked = true
         } catch {}
     }
 
-    /// Sets a custom exposure `ev` stops relative to the locked base exposure.
-    private func setExposure(ev: Double) async -> Bool {
+    /// The auto-exposure currently in use (duration, ISO).
+    private func currentExposure() -> (CMTime, Float)? {
+        guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return nil }
+        return (device.exposureDuration, device.iso)
+    }
+
+    private func restoreAutoExposure() {
         guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera,
-              let base = baseExposure, device.isExposureModeSupported(.custom) else { return false }
+              device.isExposureModeSupported(.continuousAutoExposure) else { return }
+        do {
+            try device.lockForConfiguration()
+            device.exposureMode = .continuousAutoExposure
+            device.unlockForConfiguration()
+        } catch {}
+    }
+
+    /// Sets a custom exposure `ev` stops relative to `base` (duration, ISO).
+    private func setExposure(ev: Double, base: (CMTime, Float)) async -> Bool {
+        guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera,
+              device.isExposureModeSupported(.custom) else { return false }
         let format = device.activeFormat
         let minD = CMTimeGetSeconds(format.minExposureDuration)
         let maxD = min(CMTimeGetSeconds(format.maxExposureDuration), 1.0 / 15)
@@ -547,7 +577,6 @@ final class CaptureSession: NSObject, ARSessionDelegate {
             if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { device.whiteBalanceMode = .continuousAutoWhiteBalance }
             device.unlockForConfiguration()
             exposureLocked = false
-            baseExposure = nil
         } catch {}
     }
 }

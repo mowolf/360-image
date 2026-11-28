@@ -39,10 +39,22 @@ public enum ShotMerger {
 
     /// - Parameter reference: index of the frame defining the output geometry (normally the
     ///   metered EV0 frame). Returns an image with the reference frame's size and intrinsics.
+    /// Merged burst encoded for display with the fixed `HighlightCurve.standard`.
     public static func merge(_ frames: [BurstFrame], reference: Int = 0,
                              allowReferenceSwitch: Bool = false) -> (FloatImage, Report) {
+        guard frames.count > 1 else { return (frames.first?.image ?? FloatImage(width: 1, height: 1, channels: 3), Report()) }
+        let (radiance, report) = mergeRadiance(frames, reference: reference, allowReferenceSwitch: allowReferenceSwitch)
+        return (HighlightCurve.standard.apply(radiance), report)
+    }
+
+    /// Merged burst as linear scene radiance, relative to the reference frame's exposure
+    /// (1.0 = white in the reference frame). A single frame is simply linearized.
+    public static func mergeRadiance(_ frames: [BurstFrame], reference: Int = 0,
+                                     allowReferenceSwitch: Bool = false) -> (FloatImage, Report) {
         var report = Report()
-        guard frames.count > 1 else { return (frames.first?.image ?? FloatImage(width: 1, height: 1, channels: 3), report) }
+        guard frames.count > 1 else {
+            return (linearize(frames.first?.image ?? FloatImage(width: 1, height: 1, channels: 3)), report)
+        }
         var r = reference
         // Optionally let a clearly sharper same-exposure frame define the geometry. Callers that
         // enable this must use `report.reference`'s pose and intrinsics for the result.
@@ -160,8 +172,7 @@ public enum ShotMerger {
 
         // 4. The same global highlight curve for every photo of the panorama (exposure is
         //    locked during capture), so overlapping photos stay consistent for blending.
-        let out = HighlightCurve.standard.apply(radiance)
-        return (out, report)
+        return (radiance, report)
     }
 
     // MARK: - Helpers
@@ -436,5 +447,81 @@ public enum PanoramaToneMapper {
                 for k in 0..<(n * 3) { d[k] = ShotMerger.linearToSRGB(d[k]) }
             }
         }
+    }
+}
+
+/// 16-bit log encoding of linear radiance (24 stops, 2^-12 ... 2^12 with ~0.0004-stop steps)
+/// plus the panorama-wide exposure / tone curve selection for HDR captures.
+public enum HDRRadiance {
+    public static let minLog: Float = -12
+    public static let maxLog: Float = 12
+
+    public static func encode(_ r: FloatImage) -> [UInt16] {
+        precondition(r.channels == 3)
+        var out = [UInt16](repeating: 0, count: r.data.count)
+        let span = maxLog - minLog
+        r.data.withUnsafeBufferPointer { src in
+            out.withUnsafeMutableBufferPointer { dst in
+                for i in 0..<src.count {
+                    let x = src[i]
+                    if x <= 0 { dst[i] = 0; continue }
+                    let v = (log2f(x) - minLog) / span
+                    dst[i] = UInt16(max(0, min(65535, v * 65535 + 0.5)))
+                }
+            }
+        }
+        return out
+    }
+
+    public static func decode(_ v: [UInt16], width: Int, height: Int) -> FloatImage {
+        var img = FloatImage(width: width, height: height, channels: 3)
+        let span = maxLog - minLog
+        v.withUnsafeBufferPointer { src in
+            img.data.withUnsafeMutableBufferPointer { dst in
+                for i in 0..<min(src.count, dst.count) {
+                    dst[i] = src[i] == 0 ? 0 : exp2f(Float(src[i]) / 65535 * span + minLog)
+                }
+            }
+        }
+        return img
+    }
+
+    /// Median and 99.9th percentile of luminance (sampled).
+    public static func stats(_ r: FloatImage) -> (median: Double, p999: Double) {
+        let n = r.width * r.height
+        var lum: [Float] = []
+        lum.reserveCapacity(n / 5 + 1)
+        var i = 0
+        while i < n {
+            lum.append(0.2126 * r.data[i * 3] + 0.7152 * r.data[i * 3 + 1] + 0.0722 * r.data[i * 3 + 2])
+            i += 5
+        }
+        lum.sort()
+        guard !lum.isEmpty else { return (0.18, 1) }
+        return (Double(lum[lum.count / 2]), Double(lum[min(lum.count - 1, Int(Double(lum.count) * 0.999))]))
+    }
+
+    /// Chooses one exposure gain and highlight curve for the whole panorama.
+    /// - Parameter shots: per shot (median, p99.9) of its radiance already scaled to the
+    ///   common exposure (radiance × E_ref / E_shot).
+    public static func panoramaToneMapping(shots: [(median: Double, p999: Double)]) -> (gain: Float, curve: HighlightCurve) {
+        guard !shots.isEmpty else { return (1, .standard) }
+        let medians = shots.map(\.median).sorted()
+        let median = max(medians[medians.count / 2], 1e-6)
+        // Typical scene ends up at mid-grey, like a camera's auto exposure.
+        let gain = max(1.0 / 64, min(64, 0.18 / median))
+        let peak = (shots.map(\.p999).max() ?? 1) * gain
+        let curve = peak <= 1.05 ? HighlightCurve(knee: 0.95, maxInput: 1.2)
+                                 : HighlightCurve(knee: 0.7, maxInput: Float(min(256, max(1.5, peak * 1.5))))
+        return (Float(gain), curve)
+    }
+
+    /// Radiance -> display sRGB with the panorama's gain and curve.
+    public static func toDisplay(_ r: FloatImage, gain: Float, curve: HighlightCurve) -> FloatImage {
+        var scaled = r
+        scaled.data.withUnsafeMutableBufferPointer { d in
+            for i in 0..<d.count { d[i] *= gain }
+        }
+        return curve.apply(scaled)
     }
 }

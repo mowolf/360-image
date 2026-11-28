@@ -99,6 +99,49 @@ enum ImageSupport {
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
+    /// Writes 16-bit RGB (interleaved) as a PNG; values are stored as-is (no colour conversion).
+    @discardableResult
+    static func write16BitPNG(_ values: [UInt16], width: Int, height: Int, to url: URL) -> Bool {
+        let be = values.map { $0.bigEndian }
+        let data = be.withUnsafeBytes { Data($0) }
+        guard let provider = CGDataProvider(data: data as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 16, bitsPerPixel: 48,
+                                  bytesPerRow: width * 6, space: sRGB,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue | CGBitmapInfo.byteOrder16Big.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+        else { return false }
+        CGImageDestinationAddImage(dest, image, nil)
+        return CGImageDestinationFinalize(dest)
+    }
+
+    /// Reads a 16-bit PNG written by `write16BitPNG` back to interleaved RGB values.
+    static func read16BitPNG(_ url: URL) -> (values: [UInt16], width: Int, height: Int)? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
+              image.bitsPerComponent == 16, let data = image.dataProvider?.data as Data? else { return nil }
+        let w = image.width, h = image.height
+        let channels = image.bitsPerPixel / 16
+        guard channels >= 3 else { return nil }
+        let alpha = image.alphaInfo
+        let first = (alpha == .first || alpha == .premultipliedFirst || alpha == .noneSkipFirst) ? 1 : 0
+        let little = image.bitmapInfo.contains(.byteOrder16Little)
+        let rowBytes = image.bytesPerRow
+        var out = [UInt16](repeating: 0, count: w * h * 3)
+        data.withUnsafeBytes { raw in
+            for y in 0..<h {
+                for x in 0..<w {
+                    for c in 0..<3 {
+                        let off = y * rowBytes + (x * channels + first + c) * 2
+                        let v = raw.loadUnaligned(fromByteOffset: off, as: UInt16.self)
+                        out[(y * w + x) * 3 + c] = little ? UInt16(littleEndian: v) : UInt16(bigEndian: v)
+                    }
+                }
+            }
+        }
+        return (out, w, h)
+    }
+
     /// Google Photo Sphere XMP metadata, so Photos apps / Google Maps / Facebook recognise
     /// the JPEG as an interactive 360° panorama.
     static func photoSphereMetadata(width: Int, height: Int, imageCount: Int,

@@ -118,21 +118,40 @@ final class StitchJob: Identifiable {
                 }
                 guard let stored = CaptureStore.load(folder: folder) else { throw CocoaError(.fileReadCorruptFile) }
 
-                let sources = stored.shots.map { shot in
-                    StitchSource(intrinsics: shot.intrinsics, rotation: shot.rotation, position: shot.position,
-                                 depth: shot.depthURL.flatMap(DepthIO.read),
-                                 relativeDepth: shot.relativeDepthURL.flatMap(DepthIO.readRelative)) {
-                        guard let cg = ImageSupport.loadCGImage(shot.url) else { throw CocoaError(.fileReadCorruptFile) }
-                        return ImageSupport.floatImage(from: cg)
-                    }
-                }
-                // HDR-merged shots carry a merge report next to the photo; their highlights are
-                // encoded with the standard curve and get re-tone-mapped for the whole panorama.
                 var options = options
-                let hdr = stored.shots.contains { shot in
-                    FileManager.default.fileExists(atPath: shot.url.deletingPathExtension().appendingPathExtension("merge.json").path)
+                let sources: [StitchSource]
+                if let hdr = Self.hdrToneMapping(stored.shots) {
+                    // HDR capture: every shot's radiance on one brightness scale (via its auto
+                    // exposure), then one exposure + highlight curve for the whole panorama.
+                    sources = stored.shots.map { shot in
+                        let scale = hdr.gain * Float(hdr.reference / (shot.exposureValue ?? hdr.reference))
+                        return StitchSource(intrinsics: shot.intrinsics, rotation: shot.rotation, position: shot.position,
+                                            depth: shot.depthURL.flatMap(DepthIO.read),
+                                            relativeDepth: shot.relativeDepthURL.flatMap(DepthIO.readRelative)) {
+                            guard let url = shot.hdrURL, let enc = ImageSupport.read16BitPNG(url) else {
+                                guard let cg = ImageSupport.loadCGImage(shot.url) else { throw CocoaError(.fileReadCorruptFile) }
+                                return ImageSupport.floatImage(from: cg)
+                            }
+                            let radiance = HDRRadiance.decode(enc.values, width: enc.width, height: enc.height)
+                            return HDRRadiance.toDisplay(radiance, gain: scale, curve: hdr.curve)
+                        }
+                    }
+                    options.hdrEncoding = nil
+                } else {
+                    sources = stored.shots.map { shot in
+                        StitchSource(intrinsics: shot.intrinsics, rotation: shot.rotation, position: shot.position,
+                                     depth: shot.depthURL.flatMap(DepthIO.read),
+                                     relativeDepth: shot.relativeDepthURL.flatMap(DepthIO.readRelative)) {
+                            guard let cg = ImageSupport.loadCGImage(shot.url) else { throw CocoaError(.fileReadCorruptFile) }
+                            return ImageSupport.floatImage(from: cg)
+                        }
+                    }
+                    // Older captures: shots encoded with the fixed curve -> re-tone-map at the end.
+                    let merged = stored.shots.contains { shot in
+                        FileManager.default.fileExists(atPath: shot.url.deletingPathExtension().appendingPathExtension("merge.json").path)
+                    }
+                    options.hdrEncoding = merged ? .standard : nil
                 }
-                options.hdrEncoding = hdr ? .standard : nil
                 let res = try stitcher.stitch(sources, scenePoints: stored.scenePoints, options: options) { stage, p in
                     Task { @MainActor in
                         self?.stage = stage
@@ -258,6 +277,32 @@ enum StitchJobError: LocalizedError {
     case tooManyAttempts
     var errorDescription: String? {
         "This panorama could not be finished after several attempts. Please try capturing it again."
+    }
+}
+
+extension StitchJob {
+    struct HDRToneMapping {
+        let reference: Double      // exposure value (duration × ISO) of the first shot
+        let gain: Float
+        let curve: HighlightCurve
+    }
+
+    /// Panorama-wide exposure and highlight curve, if all shots have HDR data.
+    static func hdrToneMapping(_ shots: [CapturedShot]) -> HDRToneMapping? {
+        guard let ref = shots.first?.exposureValue, ref > 0,
+              shots.allSatisfy({ $0.hdrURL != nil && ($0.exposureValue ?? 0) > 0 }) else { return nil }
+        var stats: [(median: Double, p999: Double)] = []
+        for shot in shots {
+            let json = shot.url.deletingPathExtension().appendingPathExtension("merge.json")
+            guard let data = try? Data(contentsOf: json),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let median = obj["radianceMedian"] as? Double, let p999 = obj["radianceP999"] as? Double,
+                  let e = shot.exposureValue else { return nil }
+            let s = ref / e
+            stats.append((median * s, p999 * s))
+        }
+        let (gain, curve) = HDRRadiance.panoramaToneMapping(shots: stats)
+        return HDRToneMapping(reference: ref, gain: gain, curve: curve)
     }
 }
 

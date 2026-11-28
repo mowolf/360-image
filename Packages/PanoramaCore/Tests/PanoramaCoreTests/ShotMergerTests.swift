@@ -203,3 +203,26 @@ extension ShotMergerTests {
     }
 }
 
+extension ShotMergerTests {
+    func testHDRRadianceEncodingRoundTrip() {
+        let vals: [Float] = [0, 0.0003, 0.01, 0.18, 1, 7.5, 900]
+        let img = FloatImage(width: vals.count, height: 1, channels: 3, data: vals.flatMap { [$0, $0, $0] })
+        let back = HDRRadiance.decode(HDRRadiance.encode(img), width: vals.count, height: 1)
+        for (i, v) in vals.enumerated() {
+            XCTAssertEqual(back.data[i * 3], v, accuracy: max(1e-6, v * 0.001))
+        }
+    }
+
+    /// Dark start point and a much brighter side: after the common exposure scaling, the
+    /// panorama-wide mapping keeps mid-tones near grey and the bright side below white.
+    func testPanoramaToneMappingHandlesWideRange() {
+        // Shot A (dark interior) median 0.02, p999 0.3; shot B (sunny side) median 2, p999 40.
+        let (gain, curve) = HDRRadiance.panoramaToneMapping(shots: [(0.02, 0.3), (0.05, 0.8), (2.0, 40)])
+        let mid = curve.map(0.05 * gain)
+        let sky = curve.map(40 * gain)
+        print("gain \(gain), maxInput \(curve.maxInput), interior \(ShotMerger.linearToSRGB(curve.map(0.02 * gain))), sky \(ShotMerger.linearToSRGB(sky))")
+        XCTAssertGreaterThan(ShotMerger.linearToSRGB(mid), 0.3)
+        XCTAssertLessThan(sky, 1.0)
+    }
+}
+
