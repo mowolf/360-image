@@ -24,6 +24,8 @@ struct ARViewContainer: UIViewRepresentable {
 struct CaptureView: View {
     var onFinish: (CaptureResult) -> Void
     var onOpenGallery: () -> Void
+    /// A stitch job is running: keep the camera / ARKit off (they need a lot of memory).
+    var suspended = false
 
     @State private var session = CaptureSession()
     @Environment(\.scenePhase) private var scenePhase
@@ -76,6 +78,9 @@ struct CaptureView: View {
         .background(Color.black)
         .task {
             await requestCameraAndStart()
+        }
+        .onChange(of: suspended) { _, isSuspended in
+            if isSuspended { session.stop() }
         }
         .onDisappear {
             session.stop()
@@ -257,6 +262,8 @@ struct CaptureView: View {
         default:
             cameraDenied = true; return
         }
+        // Don't start the camera underneath a running stitch (e.g. resuming at launch).
+        guard !suspended else { return }
         session.start()
     }
 

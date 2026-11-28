@@ -53,6 +53,14 @@ struct StitchingView: View {
                     .contentTransition(.opacity)
                     .animation(.default, value: job.stage)
                 Text("\(job.shots.count) photos").font(.footnote).foregroundStyle(.tertiary)
+                Text(job.wasPaused
+                     ? "Your panorama was paused while Pano 360 was in the background – it continues now. Keep the app open to finish it."
+                     : "Keep Pano 360 open until your panorama is ready.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                    .padding(.top, 10)
             }
             Spacer()
             Button("Cancel", role: .cancel) {

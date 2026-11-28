@@ -3,6 +3,7 @@ import Foundation
 import Observation
 import PanoramaCore
 import UIKit
+import os
 
 /// Runs the stitcher off the main thread and saves the finished panorama to the library.
 ///
@@ -48,12 +49,24 @@ final class StitchJob: Identifiable {
 
     /// Output width chosen from the device's memory (the multi-band blender keeps a float
     /// pyramid of the whole panorama in memory).
+    /// Picks the largest width whose estimated peak memory fits comfortably into what iOS
+    /// currently allows this app (less in the background than in the foreground).
     static var outputWidth: Int {
         let gb = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
-        if gb >= 7.5 { return 8192 }
-        if gb >= 5.5 { return 6144 }
-        return 4096
+        let deviceMax = gb >= 7.5 ? 8192 : (gb >= 5.5 ? 6144 : 4096)
+        let available = Double(os_proc_available_memory())
+        guard available > 0 else { return deviceMax }
+        // Blender pyramids ~10.7 bytes/px² of width² plus tiles, photos and headroom.
+        func estimate(_ w: Int) -> Double { Double(w) * Double(w) * 16 + 350_000_000 }
+        for w in [8192, 6144, 4096] where w <= deviceMax && estimate(w) < available * 0.8 {
+            return w
+        }
+        return 3072
     }
+
+    /// Set when the job continues after being paused / stopped in the background.
+    var wasPaused: Bool { origin == .resume || resumedAfterInterruption }
+    @ObservationIgnored private var resumedAfterInterruption = false
 
     /// Stage-local progress mapped to one overall 0...1 value.
     var overallProgress: Double {
@@ -177,6 +190,7 @@ final class StitchJob: Identifiable {
     @MainActor
     func resumeIfInterrupted() {
         guard interrupted, task == nil else { return }
+        resumedAfterInterruption = true
         start()
     }
 

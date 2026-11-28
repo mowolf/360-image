@@ -30,7 +30,8 @@ struct RootView: View {
                 job.onNewPanorama = { store.recordPanoramaCreated() }
                 self.job = job
             },
-            onOpenGallery: { showGallery = true }
+            onOpenGallery: { showGallery = true },
+            suspended: job != nil
         )
         .id(captureID)
         .fullScreenCover(item: $job, onDismiss: { captureID = UUID() }) { job in
