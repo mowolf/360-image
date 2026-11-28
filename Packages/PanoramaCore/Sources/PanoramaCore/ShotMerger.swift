@@ -171,7 +171,7 @@ public enum ShotMerger {
         return x <= 0.0031308 ? 12.92 * x : 1.055 * powf(x, 1 / 2.4) - 0.055
     }
 
-    @inline(__always) static func srgbToLinear(_ v: Float) -> Float {
+    @inline(__always) public static func srgbToLinear(_ v: Float) -> Float {
         v <= 0.04045 ? v / 12.92 : powf((v + 0.055) / 1.055, 2.4)
     }
 
@@ -353,6 +353,14 @@ public struct HighlightCurve: Sendable {
         return min(1, y)
     }
 
+    /// Exact inverse of `map` on [0, 1).
+    public func inverse(_ y: Float) -> Float {
+        if y <= knee { return max(0, y) }
+        let L = logf(1 + (maxInput - knee) / c)
+        let yy = min(y, 0.9999)
+        return knee + c * (expf((yy - knee) * L / (1 - knee)) - 1)
+    }
+
     /// Linear radiance in, display sRGB out.
     public func apply(_ radiance: FloatImage) -> FloatImage {
         var out = radiance
@@ -383,5 +391,50 @@ public struct HighlightCurve: Sendable {
             }
         }
         return out
+    }
+}
+
+/// Final tone mapping of the stitched panorama.
+///
+/// HDR shots are stored with the fixed `HighlightCurve.standard` so that overlapping photos
+/// stay consistent for alignment and blending. After stitching, the panorama is decoded
+/// back to linear radiance and re-encoded with a curve that fits *this* panorama:
+/// without real highlights (99.9th percentile ≤ 1) nothing is compressed and whites stay
+/// white; with highlights, only as much shoulder as their actual range needs.
+public enum PanoramaToneMapper {
+    public static func retone(_ img: inout FloatImage, encodedWith curve: HighlightCurve) {
+        let n = img.width * img.height
+        guard n > 0, img.channels == 3 else { return }
+        // Decode to radiance (luminance-based, hue preserved).
+        var lum = [Float](repeating: 0, count: n)
+        img.data.withUnsafeMutableBufferPointer { d in
+            for i in 0..<n {
+                var r = ShotMerger.srgbToLinear(d[i * 3]), g = ShotMerger.srgbToLinear(d[i * 3 + 1]),
+                    b = ShotMerger.srgbToLinear(d[i * 3 + 2])
+                let y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                if y > curve.knee {
+                    let s = curve.inverse(y) / y
+                    r *= s; g *= s; b *= s
+                }
+                d[i * 3] = r; d[i * 3 + 1] = g; d[i * 3 + 2] = b
+                lum[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            }
+        }
+        // Highlight range actually present (sampled percentile).
+        var sample: [Float] = []
+        sample.reserveCapacity(n / 7 + 1)
+        var i = 0
+        while i < n { sample.append(lum[i]); i += 7 }
+        sample.sort()
+        let p999 = sample[min(sample.count - 1, Int(Double(sample.count) * 0.999))]
+        let finalCurve: HighlightCurve? = p999 <= 1.05 ? nil
+            : HighlightCurve(knee: 0.75, maxInput: max(1.5, min(curve.maxInput, p999)))
+        if let finalCurve {
+            img = finalCurve.apply(img)
+        } else {
+            img.data.withUnsafeMutableBufferPointer { d in
+                for k in 0..<(n * 3) { d[k] = ShotMerger.linearToSRGB(d[k]) }
+            }
+        }
     }
 }

@@ -163,3 +163,43 @@ extension ShotMergerTests {
     }
 }
 
+extension ShotMergerTests {
+    func testCurveInverse() {
+        let c = HighlightCurve.standard
+        for x in stride(from: Float(0), through: 12, by: 0.37) {
+            XCTAssertEqual(c.inverse(c.map(x)), x, accuracy: max(0.002, x * 0.01))
+        }
+    }
+
+    /// A panorama without real highlights must come back unchanged (no washed-out whites).
+    func testRetoneWithoutHighlightsIsIdentity() {
+        var rng = SplitMix(seed: 2)
+        let W = 64, H = 32
+        let radiance = FloatImage(width: W, height: H, channels: 3,
+                                  data: (0..<(W * H * 3)).map { _ in Float(rng.uniform()) * 0.95 })
+        var encoded = HighlightCurve.standard.apply(radiance)
+        PanoramaToneMapper.retone(&encoded, encodedWith: .standard)
+        var maxErr: Float = 0
+        for i in 0..<radiance.data.count {
+            maxErr = max(maxErr, abs(encoded.data[i] - ShotMerger.linearToSRGB(radiance.data[i])))
+        }
+        print("retone identity max error \(maxErr)")
+        XCTAssertLessThan(maxErr, 0.03)
+    }
+
+    /// With real highlights the result keeps them below white and mid-tones near the original.
+    func testRetoneWithHighlights() {
+        let W = 100, H = 10
+        var radiance = FloatImage(width: W, height: H, channels: 3)
+        for i in 0..<(W * H) {
+            let v: Float = i % 100 < 90 ? 0.18 : 6.0   // 10% very bright sky
+            radiance.data[i * 3] = v; radiance.data[i * 3 + 1] = v; radiance.data[i * 3 + 2] = v
+        }
+        var encoded = HighlightCurve.standard.apply(radiance)
+        PanoramaToneMapper.retone(&encoded, encodedWith: .standard)
+        XCTAssertEqual(encoded.data[0], ShotMerger.linearToSRGB(0.18), accuracy: 0.02)   // mid-grey unchanged
+        XCTAssertLessThan(encoded.data[95 * 3], 1.0)                                         // highlight not clipped
+        XCTAssertGreaterThan(encoded.data[95 * 3], 0.9)
+    }
+}
+

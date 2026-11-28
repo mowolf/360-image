@@ -42,6 +42,9 @@ public struct StitchOptions: Sendable {
     public var compensateParallax = true
     /// Re-match all pairs from the refined poses and adjust again (more accurate, ~+30% time).
     public var secondAlignmentPass = true
+    /// Set when the photos were HDR-merged with this curve (`HighlightCurve.standard`): the
+    /// panorama is then decoded and re-tone-mapped to fit its actual highlight range.
+    public var hdrEncoding: HighlightCurve? = nil
     /// Keep the horizon level using the sensor's gravity.
     public var levelHorizon = true
     /// Estimate and remove lens vignetting (darker photo corners) from the overlaps.
@@ -373,7 +376,10 @@ public final class Stitcher: @unchecked Sendable {
             progress?(.blending, Double(k + 1) / Double(n))
         }
         progress?(.finishing, 0)
-        let (pano, coverage) = blender.finish()
+        var (pano, coverage) = blender.finish()
+        if let curve = options.hdrEncoding {
+            PanoramaToneMapper.retone(&pano, encodedWith: curve)
+        }
         report.coverage = coverage
         report.seconds = Date().timeIntervalSince(start)
         progress?(.finishing, 1)

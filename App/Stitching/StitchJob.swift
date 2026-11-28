@@ -126,6 +126,13 @@ final class StitchJob: Identifiable {
                         return ImageSupport.floatImage(from: cg)
                     }
                 }
+                // HDR-merged shots carry a merge report next to the photo; their highlights are
+                // encoded with the standard curve and get re-tone-mapped for the whole panorama.
+                var options = options
+                let hdr = stored.shots.contains { shot in
+                    FileManager.default.fileExists(atPath: shot.url.deletingPathExtension().appendingPathExtension("merge.json").path)
+                }
+                options.hdrEncoding = hdr ? .standard : nil
                 let res = try stitcher.stitch(sources, scenePoints: stored.scenePoints, options: options) { stage, p in
                     Task { @MainActor in
                         self?.stage = stage
